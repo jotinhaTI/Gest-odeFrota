@@ -4,207 +4,330 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FleetOS - Gestão de Frota</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAc4m_QQklsblnFur1wicbCEtVriHARD-k",
+  authDomain: "gestaodefrota-92813.firebaseapp.com",
+  projectId: "gestaodefrota-92813",
+  storageBucket: "gestaodefrota-92813.firebasestorage.app",
+  messagingSenderId: "518610001364",
+  appId: "1:518610001364:web:e855b6a830ae0bac894a41"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+window.DB = { veiculos:[], abastecimentos:[], manutencoes:[], ordensServico:[], documentos:[] };
+window.osCounter = 1;
+
+// ── Firestore helpers ──────────────────────────────────────
+async function loadCol(name){ const s=await getDocs(collection(db,name)); return s.docs.map(d=>({id:d.id,...d.data()})); }
+async function addItem(col,data){ const d={...data}; delete d.id; const r=await addDoc(collection(db,col),{...d,criadoEm:serverTimestamp()}); return r.id; }
+async function updItem(col,id,data){ const d={...data}; delete d.id; delete d.criadoEm; await updateDoc(doc(db,col,id),d); }
+async function delItem(col,id){ await deleteDoc(doc(db,col,id)); }
+
+async function reloadAll(){
+  const [v,a,m,o,dc]=await Promise.all([loadCol('veiculos'),loadCol('abastecimentos'),loadCol('manutencoes'),loadCol('ordensServico'),loadCol('documentos')]);
+  window.DB.veiculos=v; window.DB.abastecimentos=a; window.DB.manutencoes=m; window.DB.ordensServico=o; window.DB.documentos=dc;
+  window.osCounter=o.length+1;
+}
+
+function setLoading(on){ document.getElementById('loadingOverlay').style.display=on?'flex':'none'; }
+
+// ── Boot ──────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async ()=>{
+  const d=new Date();
+  document.getElementById('dashDate').textContent=d.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  document.getElementById('anoChart').textContent=d.getFullYear();
+  setLoading(true); await reloadAll(); setLoading(false); renderDash();
+});
+
+// ── Utils ─────────────────────────────────────────────────
+function getV(id){ return window.DB.veiculos.find(v=>v.id===id); }
+function fmtM(v){ return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtD(s){ if(!s)return'—'; const[y,m,d]=s.split('-'); return`${d}/${m}/${y}`; }
+function today(){ return new Date().toISOString().split('T')[0]; }
+window.filterTable=function(tid,val){ document.querySelectorAll('#'+tid+' tr').forEach(r=>{ r.style.display=r.textContent.toLowerCase().includes(val.toLowerCase())?'':'none'; }); };
+window.filterOS=function(st){ document.querySelectorAll('#osTable tr').forEach(r=>{ r.style.display=!st||r.textContent.toLowerCase().includes(st.toLowerCase())?'':'none'; }); };
+function toast(msg,col){ const t=document.createElement('div'); t.className='notif-toast'; t.style.background=col||'var(--green)'; t.innerHTML=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2800); }
+function sBadge(s){ const m={ativo:'badge-green',ativa:'badge-green','em manutenção':'badge-yellow','em andamento':'badge-yellow','aguardando peça':'badge-purple',inativo:'badge-gray',inativa:'badge-gray',finalizada:'badge-cyan',cancelada:'badge-red',aberta:'badge-blue',vencido:'badge-red','a vencer':'badge-yellow',regular:'badge-green'}; return`<span class="badge ${m[s]||'badge-gray'}">${s.charAt(0).toUpperCase()+s.slice(1)}</span>`; }
+
+// ── Navigation ────────────────────────────────────────────
+const PT={dashboard:'Dashboard',veiculos:'Veículos',abastecimentos:'Abastecimentos',manutencao:'Manutenção Preventiva',os:'Ordens de Serviço',documentos:'Documentos',relatorios:'Relatórios',configuracoes:'Configurações'};
+window.showPage=async function(p){
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  document.getElementById('page-'+p).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  const lbl={dashboard:'Dashboard',veiculos:'Veículos',abastecimentos:'Abastecimentos',manutencao:'Preventiva',os:'OS',documentos:'Documentos',relatorios:'Relatórios',configuracoes:'Configurações'};
+  document.querySelectorAll('.nav-item').forEach(n=>{ if(n.textContent.trim().includes(lbl[p])) n.classList.add('active'); });
+  document.getElementById('topbarTitle').textContent=PT[p]||p;
+  closeSidebar(); window.scrollTo(0,0);
+  setLoading(true); await reloadAll(); setLoading(false);
+  const r={dashboard:renderDash,veiculos:renderVeiculos,abastecimentos:renderAbast,manutencao:renderManut,os:renderOS,documentos:renderDocs};
+  if(r[p]) r[p]();
+};
+window.toggleSidebar=function(){ document.getElementById('sidebar').classList.toggle('mobile-open'); document.getElementById('sidebarOverlay').classList.toggle('open'); };
+window.closeSidebar=function(){ document.getElementById('sidebar').classList.remove('mobile-open'); document.getElementById('sidebarOverlay').classList.remove('open'); };
+
+// ── Modals ────────────────────────────────────────────────
+window.openModal=function(id,reset){ if(reset)resetModal(id); populateSel(); document.getElementById(id).classList.add('open'); };
+window.closeModal=function(id){ document.getElementById(id).classList.remove('open'); };
+document.addEventListener('DOMContentLoaded',()=>{ document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',function(e){ if(e.target===this)this.classList.remove('open'); })); });
+function resetModal(id){
+  const c=(...ids)=>ids.forEach(f=>{const el=document.getElementById(f);if(el)el.value='';});
+  if(id==='mV'){c('v-id','v-placa','v-marca','v-modelo','v-ano','v-km','v-obs');document.getElementById('v-status').value='ativo';document.getElementById('mV-title').textContent='Novo Veículo';}
+  if(id==='mA'){c('ab-id','ab-posto','ab-km','ab-litros','ab-valor','ab-obs','ab-calc');document.getElementById('ab-data').value=today();}
+  if(id==='mM'){c('mn-id','mn-km','mn-km2','mn-obs');document.getElementById('mn-data').value=today();document.getElementById('mM-title').textContent='Nova Manutenção Preventiva';}
+  if(id==='mO'){c('os-id','os-desc','os-serv','os-pecas','os-vp','os-vm','os-tempo');document.getElementById('os-num').value='OS-'+new Date().getFullYear()+'-'+String(window.osCounter).padStart(3,'0');document.getElementById('os-data').value=today();document.getElementById('os-vt').value='R$ 0,00';document.getElementById('os-status').value='aberta';document.getElementById('mO-title').textContent='Nova Ordem de Serviço';}
+  if(id==='mD'){c('dc-id','dc-venc','dc-valor','dc-obs');document.getElementById('mD-title').textContent='Novo Documento';}
+}
+function populateSel(){
+  const opts=window.DB.veiculos.map(v=>`<option value="${v.id}">${v.placa} — ${v.marca} ${v.modelo}</option>`).join('');
+  ['ab-veiculo','mn-veiculo','os-veiculo','dc-veiculo'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML=opts;});
+}
+
+// ── Dashboard ────────────────────────────────────────────
+let cG=null,cO=null;
+function renderDash(){
+  const DB=window.DB,hoje=new Date(),mesA=hoje.getMonth(),anoA=hoje.getFullYear();
+  document.getElementById('dash-tv').textContent=DB.veiculos.length;
+  document.getElementById('dash-mv').textContent=DB.veiculos.filter(v=>v.status==='em manutenção').length;
+  const gA=DB.abastecimentos.filter(a=>{const d=new Date(a.data);return d.getMonth()===mesA&&d.getFullYear()===anoA;}).reduce((s,a)=>s+(a.valorTotal||0),0);
+  const gO=DB.ordensServico.filter(o=>{const d=new Date(o.dataAbertura);return d.getMonth()===mesA&&d.getFullYear()===anoA;}).reduce((s,o)=>s+(o.valTotal||0),0);
+  document.getElementById('dash-gv').textContent=fmtM(gA+gO);
+  document.getElementById('dash-pv').textContent=DB.manutencoes.filter(m=>{const v=getV(m.veiculoId);return v&&(v.kmAtual||0)>=(m.kmProxima||0);}).length;
+  const d30=DB.documentos.filter(d=>(new Date(d.vencimento)-hoje)/864e5<=30);
+  document.getElementById('dash-dv').textContent=d30.length;
+  document.getElementById('docBadge').textContent=d30.length;
+  document.getElementById('dashOsTable').innerHTML=[...DB.ordensServico].reverse().slice(0,5).map(o=>{const v=getV(o.veiculoId);return`<tr><td class="mono" style="color:var(--accent)">${o.numero}</td><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${o.tipo||''}</td><td>${sBadge(o.status||'aberta')}</td><td>${fmtD(o.dataAbertura)}</td><td class="mono">${fmtM(o.valTotal)}</td></tr>`;}).join('');
+  const months=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'],gm=Array(12).fill(0);
+  DB.abastecimentos.forEach(a=>{const m=new Date(a.data).getMonth();gm[m]+=(a.valorTotal||0);});
+  DB.ordensServico.forEach(o=>{const m=new Date(o.dataAbertura).getMonth();gm[m]+=(o.valTotal||0);});
+  if(cG)cG.destroy(); cG=new Chart(document.getElementById('chartG'),{type:'bar',data:{labels:months,datasets:[{label:'R$',data:gm,backgroundColor:'#3b82f628',borderColor:'#3b82f6',borderWidth:2,borderRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{grid:{color:'#ffffff08'},ticks:{color:'#9099b0',font:{size:11}}},y:{grid:{color:'#ffffff08'},ticks:{color:'#9099b0',font:{size:11},callback:v=>'R$'+Math.round(v/1000)+'k'}}}}});
+  const sc={aberta:0,'em andamento':0,'aguardando peça':0,finalizada:0,cancelada:0};
+  DB.ordensServico.forEach(o=>{sc[o.status]=(sc[o.status]||0)+1;});
+  if(cO)cO.destroy(); cO=new Chart(document.getElementById('chartO'),{type:'doughnut',data:{labels:['Aberta','Em Andamento','Aguard. Peça','Finalizada','Cancelada'],datasets:[{data:Object.values(sc),backgroundColor:['#3b82f635','#f59e0b35','#a855f735','#22c55e35','#ef444435'],borderColor:['#3b82f6','#f59e0b','#a855f7','#22c55e','#ef4444'],borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9099b0',font:{size:11},padding:8}}}}});
+}
+
+// ── Veículos ─────────────────────────────────────────────
+function renderVeiculos(){
+  const DB=window.DB,tbody=document.getElementById('tV');
+  document.getElementById('vCount').textContent=`${DB.veiculos.length} veículo(s)`;
+  tbody.innerHTML=DB.veiculos.length?DB.veiculos.map(v=>`<tr><td><span class="plate">${v.placa}</span></td><td>${v.modelo}</td><td>${v.marca}</td><td>${v.ano}</td><td class="mono">${Number(v.kmAtual||0).toLocaleString('pt-BR')} km</td><td>${v.combustivel}</td><td>${sBadge(v.status)}</td><td><div class="flex"><button class="btn btn-ghost btn-sm" onclick="editV('${v.id}')"><i class="fa-solid fa-pen"></i></button><button class="btn btn-danger btn-sm" onclick="delV('${v.id}')"><i class="fa-solid fa-trash"></i></button></div></td></tr>`).join(''):`<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-car"></i><p>Nenhum veículo cadastrado.</p></div></td></tr>`;
+}
+window.salvarV=async function(){
+  const id=document.getElementById('v-id').value;
+  const obj={placa:document.getElementById('v-placa').value.toUpperCase(),modelo:document.getElementById('v-modelo').value,marca:document.getElementById('v-marca').value,ano:+document.getElementById('v-ano').value,kmAtual:+document.getElementById('v-km').value,combustivel:document.getElementById('v-comb').value,status:document.getElementById('v-status').value,obs:document.getElementById('v-obs').value};
+  if(!obj.placa||!obj.marca||!obj.modelo){toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos!','var(--red)');return;}
+  setLoading(true); if(id)await updItem('veiculos',id,obj); else await addItem('veiculos',obj);
+  await reloadAll(); setLoading(false); closeModal('mV'); renderVeiculos(); toast('<i class="fa-solid fa-check"></i> Veículo salvo!');
+};
+window.editV=function(id){
+  const v=getV(id);if(!v)return;
+  document.getElementById('v-id').value=v.id; document.getElementById('v-placa').value=v.placa; document.getElementById('v-marca').value=v.marca; document.getElementById('v-modelo').value=v.modelo; document.getElementById('v-ano').value=v.ano; document.getElementById('v-km').value=v.kmAtual; document.getElementById('v-comb').value=v.combustivel; document.getElementById('v-status').value=v.status; document.getElementById('v-obs').value=v.obs||'';
+  document.getElementById('mV-title').textContent='Editar — '+v.placa; openModal('mV');
+};
+window.delV=async function(id){
+  if(!confirm('Excluir este veículo?'))return;
+  setLoading(true); await delItem('veiculos',id); await reloadAll(); setLoading(false); renderVeiculos(); toast('<i class="fa-solid fa-check"></i> Excluído.','var(--text3)');
+};
+
+// ── Abastecimentos ────────────────────────────────────────
+window.calcC=function(){
+  const km=+document.getElementById('ab-km').value,lit=+document.getElementById('ab-litros').value,v=getV(document.getElementById('ab-veiculo').value);
+  document.getElementById('ab-calc').value=(v&&v.kmAtual&&km>v.kmAtual&&lit>0)?((km-v.kmAtual)/lit).toFixed(2)+' km/L':'';
+};
+function renderAbast(){
+  const DB=window.DB,tbody=document.getElementById('tA');
+  if(!DB.abastecimentos.length){tbody.innerHTML=`<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-gas-pump"></i><p>Nenhum abastecimento.</p></div></td></tr>`;return;}
+  const s=[...DB.abastecimentos].sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+  tbody.innerHTML=s.map(a=>{const v=getV(a.veiculoId);return`<tr><td>${fmtD(a.data)}</td><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${a.posto}</td><td class="mono">${a.litros} L</td><td class="mono">${fmtM(a.valorTotal)}</td><td class="mono">${Number(a.kmAtual||0).toLocaleString('pt-BR')} km</td><td class="mono" style="color:var(--cyan)">${a.consumo?a.consumo+' km/L':'—'}</td><td><button class="btn btn-danger btn-sm" onclick="delA('${a.id}')"><i class="fa-solid fa-trash"></i></button></td></tr>`;}).join('');
+  const mesA=new Date().getMonth(),mes=DB.abastecimentos.filter(a=>new Date(a.data).getMonth()===mesA);
+  const tL=mes.reduce((s,a)=>s+(a.litros||0),0),tV=mes.reduce((s,a)=>s+(a.valorTotal||0),0),ca=mes.filter(a=>a.consumo).map(a=>+a.consumo);
+  document.getElementById('sL').textContent=tL.toFixed(0)+' L'; document.getElementById('sV').textContent=fmtM(tV); document.getElementById('sC').textContent=ca.length?(ca.reduce((s,c)=>s+c,0)/ca.length).toFixed(1)+' km/L':'— km/L';
+}
+window.salvarA=async function(){
+  const vId=document.getElementById('ab-veiculo').value,km=+document.getElementById('ab-km').value,lit=+document.getElementById('ab-litros').value,v=getV(vId);
+  const consumo=(v&&v.kmAtual&&km>v.kmAtual&&lit>0)?+((km-v.kmAtual)/lit).toFixed(2):null;
+  const obj={veiculoId:vId,posto:document.getElementById('ab-posto').value||'Não informado',litros:lit,valorTotal:+document.getElementById('ab-valor').value||0,kmAtual:km,data:document.getElementById('ab-data').value,obs:document.getElementById('ab-obs').value,consumo};
+  if(!obj.data||!obj.litros){toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos!','var(--red)');return;}
+  setLoading(true); if(v&&km>v.kmAtual)await updItem('veiculos',v.id,{...v,kmAtual:km}); await addItem('abastecimentos',obj); await reloadAll(); setLoading(false); closeModal('mA'); renderAbast(); toast('<i class="fa-solid fa-check"></i> Abastecimento registrado!');
+};
+window.delA=async function(id){if(!confirm('Excluir?'))return; setLoading(true);await delItem('abastecimentos',id);await reloadAll();setLoading(false);renderAbast();};
+
+// ── Manutenção ────────────────────────────────────────────
+function renderManut(){
+  const DB=window.DB,tbody=document.getElementById('tM'),aEl=document.getElementById('alertsM');
+  const al=DB.manutencoes.filter(m=>{const v=getV(m.veiculoId);return v&&((v.kmAtual||0)>=(m.kmProxima||0)||(m.kmProxima-v.kmAtual)<=500);});
+  document.getElementById('manutBadge').textContent=al.length;
+  aEl.innerHTML=al.map(m=>{const v=getV(m.veiculoId);const vencida=(v.kmAtual||0)>=(m.kmProxima||0);const falta=m.kmProxima-v.kmAtual;return`<div class="alert-item ${vencida?'danger':'warn'}"><div class="alert-icon" style="background:${vencida?'var(--red-bg)':'var(--yellow-bg)'};color:${vencida?'var(--red)':'var(--yellow)'}"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="alert-text"><strong>${v?v.placa+' — '+v.modelo:''} · ${m.tipo}</strong><span>${vencida?'Manutenção VENCIDA!':'Faltam '+falta.toLocaleString('pt-BR')+' km'}</span></div><span class="badge ${vencida?'badge-red':'badge-yellow'}">${vencida?'VENCIDA':'PRÓXIMA'}</span></div>`;}).join('');
+  tbody.innerHTML=DB.manutencoes.length?DB.manutencoes.map(m=>{const v=getV(m.veiculoId);const vencida=v&&(v.kmAtual||0)>=(m.kmProxima||0);const pct=v?Math.min(100,Math.round(((v.kmAtual||0)-(m.kmTroca||0))/((m.kmProxima||1)-(m.kmTroca||0))*100)):0;const cor=vencida?'var(--red)':pct>80?'var(--yellow)':'var(--green)';return`<tr><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${m.tipo}</td><td class="mono">${Number(m.kmTroca||0).toLocaleString('pt-BR')} km</td><td class="mono">${Number(m.kmProxima||0).toLocaleString('pt-BR')} km</td><td><div style="font-size:11px;color:var(--text3);margin-bottom:4px">${pct}%</div><div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%;background:${cor}"></div></div></td><td>${fmtD(m.data)}</td><td>${sBadge(vencida?'vencido':'regular')}</td><td><div class="flex"><button class="btn btn-ghost btn-sm" onclick="editM('${m.id}')"><i class="fa-solid fa-pen"></i></button><button class="btn btn-danger btn-sm" onclick="delM('${m.id}')"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;}).join(''):`<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-wrench"></i><p>Nenhuma manutenção.</p></div></td></tr>`;
+}
+window.salvarM=async function(){
+  const id=document.getElementById('mn-id').value;
+  const obj={veiculoId:document.getElementById('mn-veiculo').value,tipo:document.getElementById('mn-tipo').value,kmTroca:+document.getElementById('mn-km').value,kmProxima:+document.getElementById('mn-km2').value,data:document.getElementById('mn-data').value,obs:document.getElementById('mn-obs').value};
+  if(!obj.veiculoId||!obj.kmTroca){toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos!','var(--red)');return;}
+  setLoading(true); if(id)await updItem('manutencoes',id,obj); else await addItem('manutencoes',obj); await reloadAll(); setLoading(false); closeModal('mM'); renderManut(); toast('<i class="fa-solid fa-check"></i> Salvo!');
+};
+window.editM=function(id){const m=window.DB.manutencoes.find(x=>x.id===id);if(!m)return; populateSel(); document.getElementById('mn-id').value=m.id;document.getElementById('mn-veiculo').value=m.veiculoId;document.getElementById('mn-tipo').value=m.tipo;document.getElementById('mn-km').value=m.kmTroca;document.getElementById('mn-km2').value=m.kmProxima;document.getElementById('mn-data').value=m.data;document.getElementById('mn-obs').value=m.obs||'';document.getElementById('mM-title').textContent='Editar Manutenção';openModal('mM');};
+window.delM=async function(id){if(!confirm('Excluir?'))return;setLoading(true);await delItem('manutencoes',id);await reloadAll();setLoading(false);renderManut();};
+
+// ── OS ────────────────────────────────────────────────────
+window.calcOS=function(){const p=+document.getElementById('os-vp').value||0,m=+document.getElementById('os-vm').value||0;document.getElementById('os-vt').value=fmtM(p+m);};
+function renderOS(){
+  const DB=window.DB,tbody=document.getElementById('tOS');
+  document.getElementById('os-ab').textContent=DB.ordensServico.filter(o=>o.status==='aberta').length;
+  document.getElementById('os-an').textContent=DB.ordensServico.filter(o=>o.status==='em andamento').length;
+  document.getElementById('os-ag').textContent=DB.ordensServico.filter(o=>o.status==='aguardando peça').length;
+  document.getElementById('os-fi').textContent=DB.ordensServico.filter(o=>o.status==='finalizada').length;
+  document.getElementById('os-vt2').textContent=fmtM(DB.ordensServico.reduce((s,o)=>s+(o.valTotal||0),0));
+  document.getElementById('osBadge').textContent=DB.ordensServico.filter(o=>o.status==='aberta'||o.status==='em andamento').length;
+  tbody.innerHTML=DB.ordensServico.length?[...DB.ordensServico].sort((a,b)=>(b.dataAbertura||'').localeCompare(a.dataAbertura||'')).map(o=>{const v=getV(o.veiculoId);return`<tr><td class="mono" style="color:var(--accent)">${o.numero}</td><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${o.tipo||''}</td><td>${sBadge(o.status||'aberta')}</td><td>${fmtD(o.dataAbertura)}</td><td class="mono">${fmtM(o.valTotal)}</td><td>${o.tempo?o.tempo+'h':'—'}</td><td><div class="flex"><button class="btn btn-ghost btn-sm" onclick="editOS('${o.id}')"><i class="fa-solid fa-pen"></i></button><button class="btn btn-danger btn-sm" onclick="delOS('${o.id}')"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;}).join(''):`<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-file-invoice"></i><p>Nenhuma OS.</p></div></td></tr>`;
+}
+window.salvarOS=async function(){
+  const id=document.getElementById('os-id').value,p=+document.getElementById('os-vp').value||0,m=+document.getElementById('os-vm').value||0;
+  const obj={numero:document.getElementById('os-num').value,veiculoId:document.getElementById('os-veiculo').value,tipo:document.getElementById('os-tipo').value,status:document.getElementById('os-status').value,dataAbertura:document.getElementById('os-data').value,descricao:document.getElementById('os-desc').value,servicos:document.getElementById('os-serv').value,pecas:document.getElementById('os-pecas').value,valPecas:p,valMao:m,valTotal:p+m,tempo:+document.getElementById('os-tempo').value||0};
+  if(!obj.veiculoId||!obj.dataAbertura){toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos!','var(--red)');return;}
+  setLoading(true); if(id)await updItem('ordensServico',id,obj); else{await addItem('ordensServico',obj);window.osCounter++;} await reloadAll(); setLoading(false); closeModal('mO'); renderOS(); toast('<i class="fa-solid fa-check"></i> OS salva!');
+};
+window.editOS=function(id){const o=window.DB.ordensServico.find(x=>x.id===id);if(!o)return; populateSel(); document.getElementById('os-id').value=o.id;document.getElementById('os-num').value=o.numero;document.getElementById('os-veiculo').value=o.veiculoId;document.getElementById('os-tipo').value=o.tipo;document.getElementById('os-status').value=o.status;document.getElementById('os-data').value=o.dataAbertura;document.getElementById('os-desc').value=o.descricao||'';document.getElementById('os-serv').value=o.servicos||'';document.getElementById('os-pecas').value=o.pecas||'';document.getElementById('os-vp').value=o.valPecas||0;document.getElementById('os-vm').value=o.valMao||0;document.getElementById('os-vt').value=fmtM(o.valTotal);document.getElementById('os-tempo').value=o.tempo||0;document.getElementById('mO-title').textContent='Editar OS — '+o.numero;openModal('mO');};
+window.delOS=async function(id){if(!confirm('Excluir?'))return;setLoading(true);await delItem('ordensServico',id);await reloadAll();setLoading(false);renderOS();};
+
+// ── Documentos ────────────────────────────────────────────
+function renderDocs(){
+  const DB=window.DB,tbody=document.getElementById('tD'),aEl=document.getElementById('alertsD'),hoje=new Date();
+  const venc=DB.documentos.filter(d=>(new Date(d.vencimento)-hoje)/864e5<=30);
+  document.getElementById('docBadge').textContent=venc.length;
+  aEl.innerHTML=venc.map(d=>{const v=getV(d.veiculoId);const diff=Math.round((new Date(d.vencimento)-hoje)/864e5);const vc=diff<0;return`<div class="alert-item ${vc?'danger':'warn'}"><div class="alert-icon" style="background:${vc?'var(--red-bg)':'var(--yellow-bg)'};color:${vc?'var(--red)':'var(--yellow)'}"><i class="fa-solid fa-file-circle-exclamation"></i></div><div class="alert-text"><strong>${v?v.placa+' — ':''} ${d.tipo}</strong><span>${vc?'Vencido há '+Math.abs(diff)+' dia(s)':'Vence em '+diff+' dia(s) — '+fmtD(d.vencimento)}</span></div><span class="badge ${vc?'badge-red':'badge-yellow'}">${vc?'VENCIDO':'A VENCER'}</span></div>`;}).join('');
+  tbody.innerHTML=DB.documentos.length?DB.documentos.map(d=>{const v=getV(d.veiculoId);const diff=Math.round((new Date(d.vencimento)-hoje)/864e5);const st=diff<0?'vencido':diff<=30?'a vencer':'regular';return`<tr><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${d.tipo}</td><td>${fmtD(d.vencimento)}</td><td style="color:${diff<0?'var(--red)':diff<=30?'var(--yellow)':'var(--green)'}">${diff<0?Math.abs(diff)+' dias atrás':diff+' dias'}</td><td class="mono">${fmtM(d.valor)}</td><td>${sBadge(st)}</td><td><div class="flex"><button class="btn btn-ghost btn-sm" onclick="editD('${d.id}')"><i class="fa-solid fa-pen"></i></button><button class="btn btn-danger btn-sm" onclick="delD('${d.id}')"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;}).join(''):`<tr><td colspan="7"><div class="empty-state"><i class="fa-solid fa-folder-open"></i><p>Nenhum documento.</p></div></td></tr>`;
+}
+window.salvarD=async function(){
+  const id=document.getElementById('dc-id').value;
+  const obj={veiculoId:document.getElementById('dc-veiculo').value,tipo:document.getElementById('dc-tipo').value,vencimento:document.getElementById('dc-venc').value,valor:+document.getElementById('dc-valor').value||0,obs:document.getElementById('dc-obs').value};
+  if(!obj.veiculoId||!obj.vencimento){toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos!','var(--red)');return;}
+  setLoading(true); if(id)await updItem('documentos',id,obj); else await addItem('documentos',obj); await reloadAll(); setLoading(false); closeModal('mD'); renderDocs(); toast('<i class="fa-solid fa-check"></i> Documento salvo!');
+};
+window.editD=function(id){const d=window.DB.documentos.find(x=>x.id===id);if(!d)return; populateSel(); document.getElementById('dc-id').value=d.id;document.getElementById('dc-veiculo').value=d.veiculoId;document.getElementById('dc-tipo').value=d.tipo;document.getElementById('dc-venc').value=d.vencimento;document.getElementById('dc-valor').value=d.valor;document.getElementById('dc-obs').value=d.obs||'';document.getElementById('mD-title').textContent='Editar Documento';openModal('mD');};
+window.delD=async function(id){if(!confirm('Excluir?'))return;setLoading(true);await delItem('documentos',id);await reloadAll();setLoading(false);renderDocs();};
+
+// ── Relatórios ────────────────────────────────────────────
+window.gerarRel=function(tipo){
+  const DB=window.DB,body=document.getElementById('relBody'),title=document.getElementById('relTitle'),el=document.getElementById('relResult');
+  el.style.display='block';
+  if(tipo==='cv'){title.textContent='Custo por Veículo';const rows=DB.veiculos.map(v=>{const ab=DB.abastecimentos.filter(a=>a.veiculoId===v.id).reduce((s,a)=>s+(a.valorTotal||0),0);const os=DB.ordensServico.filter(o=>o.veiculoId===v.id).reduce((s,o)=>s+(o.valTotal||0),0);return{placa:v.placa,modelo:v.marca+' '+v.modelo,ab,os,total:ab+os};}).sort((a,b)=>b.total-a.total);const tot=rows.reduce((s,r)=>s+r.total,0);body.innerHTML=`<table><thead><tr><th>Placa</th><th>Modelo</th><th>Abastecimentos</th><th>OS</th><th>Total</th></tr></thead><tbody>${rows.map(r=>`<tr><td><span class="plate">${r.placa}</span></td><td>${r.modelo}</td><td class="mono">${fmtM(r.ab)}</td><td class="mono">${fmtM(r.os)}</td><td class="mono" style="font-weight:600">${fmtM(r.total)}</td></tr>`).join('')}<tr style="border-top:2px solid var(--border3)"><td colspan="4" style="font-weight:600">Total</td><td class="mono" style="font-weight:700;color:var(--accent)">${fmtM(tot)}</td></tr></tbody></table>`;}
+  if(tipo==='cb'){title.textContent='Combustível';const s=[...DB.abastecimentos].sort((a,b)=>(b.data||'').localeCompare(a.data||''));body.innerHTML=`<table><thead><tr><th>Data</th><th>Veículo</th><th>Posto</th><th>Litros</th><th>Valor</th><th>Consumo</th></tr></thead><tbody>${s.map(a=>{const v=getV(a.veiculoId);return`<tr><td>${fmtD(a.data)}</td><td>${v?`<span class="plate">${v.placa}</span>`:'—'}</td><td>${a.posto}</td><td class="mono">${a.litros} L</td><td class="mono">${fmtM(a.valorTotal)}</td><td class="mono" style="color:var(--cyan)">${a.consumo?a.consumo+' km/L':'—'}</td></tr>`;}).join('')}</tbody></table>`;}
+  if(tipo==='os'){title.textContent='Histórico OS';const s=[...DB.ordensServico].sort((a,b)=>(b.dataAbertura||'').localeCompare(a.dataAbertura||''));body.innerHTML=`<table><thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Data</th><th>Valor</th></tr></thead><tbody>${s.map(o=>{const v=getV(o.veiculoId);return`<tr><td class="mono" style="color:var(--accent)">${o.numero}</td><td>${v?`<span class="plate">${v.placa}</span>`:'—'}</td><td>${o.tipo}</td><td>${sBadge(o.status)}</td><td>${fmtD(o.dataAbertura)}</td><td class="mono">${fmtM(o.valTotal)}</td></tr>`;}).join('')}</tbody></table>`;}
+  if(tipo==='docs'){title.textContent='Documentos Vencidos';const hoje=new Date(),docs=DB.documentos.filter(d=>(new Date(d.vencimento)-hoje)/864e5<=30).sort((a,b)=>a.vencimento.localeCompare(b.vencimento));body.innerHTML=docs.length?`<table><thead><tr><th>Veículo</th><th>Tipo</th><th>Vencimento</th><th>Valor</th><th>Status</th></tr></thead><tbody>${docs.map(d=>{const v=getV(d.veiculoId);const diff=Math.round((new Date(d.vencimento)-hoje)/864e5);return`<tr><td>${v?`<span class="plate">${v.placa}</span> ${v.modelo}`:'—'}</td><td>${d.tipo}</td><td>${fmtD(d.vencimento)}</td><td class="mono">${fmtM(d.valor)}</td><td>${sBadge(diff<0?'vencido':'a vencer')}</td></tr>`;}).join('')}</tbody></table>`:'<div class="empty-state"><i class="fa-solid fa-circle-check" style="color:var(--green)"></i><p>Nenhum documento vencido.</p></div>';}
+  el.scrollIntoView({behavior:'smooth'});
+};
+window.exportCSV=function(tipo){
+  const DB=window.DB;let csv='';
+  if(tipo==='cv'){csv='Placa,Modelo,Abastecimentos,OS,Total\n';DB.veiculos.forEach(v=>{const ab=DB.abastecimentos.filter(a=>a.veiculoId===v.id).reduce((s,a)=>s+(a.valorTotal||0),0);const os=DB.ordensServico.filter(o=>o.veiculoId===v.id).reduce((s,o)=>s+(o.valTotal||0),0);csv+=`${v.placa},${v.marca} ${v.modelo},${ab.toFixed(2)},${os.toFixed(2)},${(ab+os).toFixed(2)}\n`;});}
+  if(tipo==='cb'){csv='Data,Veiculo,Posto,Litros,Valor,Consumo\n';DB.abastecimentos.forEach(a=>{const v=getV(a.veiculoId);csv+=`${fmtD(a.data)},${v?v.placa:''},${a.posto},${a.litros},${a.valorTotal||0},${a.consumo||''}\n`;});}
+  if(tipo==='os'){csv='Numero,Veiculo,Tipo,Status,Data,Valor\n';DB.ordensServico.forEach(o=>{const v=getV(o.veiculoId);csv+=`${o.numero},${v?v.placa:''},${o.tipo},${o.status},${fmtD(o.dataAbertura)},${o.valTotal||0}\n`;});}
+  if(tipo==='docs'){csv='Veiculo,Tipo,Vencimento,Valor,Status\n';const hoje=new Date();DB.documentos.forEach(d=>{const v=getV(d.veiculoId);const diff=Math.round((new Date(d.vencimento)-hoje)/864e5);csv+=`${v?v.placa:''},${d.tipo},${fmtD(d.vencimento)},${d.valor||0},${diff<0?'vencido':'a vencer'}\n`;});}
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='fleetos_'+tipo+'_'+today()+'.csv';a.click();toast('<i class="fa-solid fa-download"></i> CSV exportado!');
+};
+window.imprimirRel=function(){window.print();};
+window.saveConfig=function(){toast('<i class="fa-solid fa-check"></i> Configurações salvas!');};
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{
---bg:#0a0c10;
---bg2:#0f1117;
---bg3:#151821;
---bg4:#1a1e28;
---bg5:#1f2535;
---border:#ffffff0f;
---border2:#ffffff18;
---border3:#ffffff25;
---text:#e8eaf0;
---text2:#9099b0;
---text3:#5a6480;
---accent:#3b82f6;
---accent2:#1d4ed8;
---accent-glow:#3b82f620;
---green:#22c55e;
---green-bg:#22c55e18;
---red:#ef4444;
---red-bg:#ef444418;
---yellow:#f59e0b;
---yellow-bg:#f59e0b18;
---purple:#a855f7;
---purple-bg:#a855f718;
---cyan:#06b6d4;
---cyan-bg:#06b6d418;
---sidebar:240px;
---r:8px;
---r2:12px;
-}
+:root{--bg:#0a0c10;--bg2:#0f1117;--bg3:#151821;--bg4:#1a1e28;--border:#ffffff0f;--border2:#ffffff18;--border3:#ffffff25;--text:#e8eaf0;--text2:#9099b0;--text3:#5a6480;--accent:#3b82f6;--accent2:#1d4ed8;--accent-glow:#3b82f620;--green:#22c55e;--green-bg:#22c55e18;--red:#ef4444;--red-bg:#ef444418;--yellow:#f59e0b;--yellow-bg:#f59e0b18;--purple:#a855f7;--purple-bg:#a855f718;--cyan:#06b6d4;--cyan-bg:#06b6d418;--sidebar:240px;--r:8px;--r2:12px}
 body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
-
-/* LOGIN */
-#loginScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);position:fixed;inset:0;z-index:1000}
-.login-bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 50%,#3b82f608 0%,transparent 60%),radial-gradient(ellipse at 70% 20%,#a855f706 0%,transparent 50%)}
-.login-box{position:relative;width:420px;padding:48px 40px;background:var(--bg2);border:1px solid var(--border2);border-radius:16px}
-.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:36px}
-.login-logo-icon{width:44px;height:44px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff}
-.login-logo-text{font-size:22px;font-weight:600;letter-spacing:-0.5px}
-.login-logo-text span{color:var(--accent)}
-.login-subtitle{font-size:13px;color:var(--text3);margin-bottom:32px;margin-top:-24px}
-.form-group{margin-bottom:16px}
-.form-group label{display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px;letter-spacing:0.5px;text-transform:uppercase}
-.form-group input{width:100%;padding:12px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:14px;font-family:inherit;outline:none;transition:all .2s}
-.form-group input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
-.btn-login{width:100%;padding:13px;background:var(--accent);border:none;border-radius:var(--r);color:#fff;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;font-family:inherit;transition:all .2s;letter-spacing:0.3px}
-.btn-login:hover{background:var(--accent2);transform:translateY(-1px)}
-.login-error{background:var(--red-bg);border:1px solid #ef444430;border-radius:var(--r);padding:10px 14px;font-size:13px;color:var(--red);margin-top:12px;display:none}
-.login-hint{font-size:11px;color:var(--text3);margin-top:20px;text-align:center}
-
-/* APP */
-#app{display:none;min-height:100vh}
-
-/* SIDEBAR */
+#loadingOverlay{position:fixed;inset:0;background:#00000070;z-index:500;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px}
+.spinner{width:40px;height:40px;border:3px solid #ffffff20;border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .sidebar{position:fixed;left:0;top:0;bottom:0;width:var(--sidebar);background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:100;transition:transform .3s}
 .sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border)}
 .sidebar-brand{display:flex;align-items:center;gap:10px}
 .sidebar-brand-icon{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff}
-.sidebar-brand-name{font-size:15px;font-weight:600;letter-spacing:-0.3px}
+.sidebar-brand-name{font-size:15px;font-weight:600}
 .sidebar-brand-name span{color:var(--accent)}
 .sidebar-nav{flex:1;padding:12px 0;overflow-y:auto}
 .nav-section{padding:0 12px;margin-bottom:4px}
-.nav-section-label{font-size:10px;font-weight:600;color:var(--text3);letter-spacing:1.2px;text-transform:uppercase;padding:8px 8px 4px}
-.nav-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--r);cursor:pointer;transition:all .15s;color:var(--text2);font-size:13.5px;font-weight:400;border:1px solid transparent;margin-bottom:1px}
+.nav-label{font-size:10px;font-weight:600;color:var(--text3);letter-spacing:1.2px;text-transform:uppercase;padding:8px 8px 4px}
+.nav-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--r);cursor:pointer;transition:all .15s;color:var(--text2);font-size:13.5px;border:1px solid transparent;margin-bottom:1px}
 .nav-item:hover{background:var(--bg4);color:var(--text)}
 .nav-item.active{background:var(--accent-glow);color:var(--accent);border-color:#3b82f625}
 .nav-item i{width:18px;font-size:14px;text-align:center}
 .nav-badge{margin-left:auto;background:var(--red);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:20px;min-width:18px;text-align:center}
 .sidebar-footer{padding:12px;border-top:1px solid var(--border)}
-.user-card{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg3);border-radius:var(--r);cursor:pointer;transition:background .15s}
-.user-card:hover{background:var(--bg4)}
-.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;flex-shrink:0}
-.user-info{flex:1;min-width:0}
-.user-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.user-role{font-size:11px;color:var(--text3)}
-
-/* TOPBAR */
 .topbar{position:fixed;top:0;left:var(--sidebar);right:0;height:60px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:16px;z-index:99}
 .topbar-menu-btn{display:none;background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer;padding:4px}
 .topbar-title{font-size:15px;font-weight:600;flex:1}
-.topbar-actions{display:flex;align-items:center;gap:8px}
-.topbar-btn{width:36px;height:36px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);font-size:14px;transition:all .15s;position:relative}
-.topbar-btn:hover{color:var(--text);border-color:var(--border3)}
-.notif-dot{position:absolute;top:6px;right:6px;width:7px;height:7px;background:var(--red);border-radius:50%;border:1.5px solid var(--bg2)}
-
-/* MAIN */
+.topbar-btn{width:36px;height:36px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);font-size:14px}
 .main{margin-left:var(--sidebar);padding-top:60px;min-height:100vh}
 .page{display:none;padding:28px;animation:fadeIn .2s ease}
 .page.active{display:block}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-
-/* PAGE HEADER */
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
-.page-title{font-size:20px;font-weight:600;letter-spacing:-0.3px}
+.page-title{font-size:20px;font-weight:600;letter-spacing:-.3px}
 .page-subtitle{font-size:13px;color:var(--text3);margin-top:2px}
-
-/* CARDS */
 .cards-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
 .stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:20px;transition:border-color .2s}
 .stat-card:hover{border-color:var(--border3)}
 .stat-card-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
 .stat-card-icon{width:38px;height:38px;border-radius:var(--r);display:flex;align-items:center;justify-content:center;font-size:16px}
 .stat-card-trend{font-size:11px;font-weight:500;padding:3px 8px;border-radius:20px}
-.stat-card-trend.up{background:var(--green-bg);color:var(--green)}
-.stat-card-trend.down{background:var(--red-bg);color:var(--red)}
-.stat-card-trend.warn{background:var(--yellow-bg);color:var(--yellow)}
+.trend-up{background:var(--green-bg);color:var(--green)}.trend-warn{background:var(--yellow-bg);color:var(--yellow)}.trend-down{background:var(--red-bg);color:var(--red)}
 .stat-card-value{font-size:26px;font-weight:600;letter-spacing:-1px;font-family:'IBM Plex Mono',monospace;margin-bottom:4px}
 .stat-card-label{font-size:12px;color:var(--text3)}
-
-/* CHARTS */
 .charts-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:24px}
 .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:20px}
-.chart-card-title{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
-
-/* TABLE */
+.chart-title{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:16px}
 .table-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden}
-.table-card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
-.table-card-title{font-size:13px;font-weight:600}
-.table-actions{display:flex;align-items:center;gap:8px}
+.tc-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.tc-title{font-size:13px;font-weight:600}
 .search-box{display:flex;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:8px 12px}
 .search-box input{background:none;border:none;outline:none;color:var(--text);font-size:13px;font-family:inherit;width:200px}
 .search-box i{color:var(--text3);font-size:13px}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:var(--r);font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all .15s;font-family:inherit}
-.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn-primary:hover{background:var(--accent2)}
-.btn-ghost{background:var(--bg3);color:var(--text2);border-color:var(--border2)}
-.btn-ghost:hover{background:var(--bg4);color:var(--text)}
-.btn-danger{background:var(--red-bg);color:var(--red);border-color:#ef444425}
-.btn-danger:hover{background:#ef444428}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:var(--bg3);color:var(--text2);border-color:var(--border2)}.btn-ghost:hover{background:var(--bg4);color:var(--text)}
+.btn-danger{background:var(--red-bg);color:var(--red);border-color:#ef444425}.btn-danger:hover{background:#ef444428}
 .btn-sm{padding:5px 10px;font-size:12px}
 table{width:100%;border-collapse:collapse}
-thead th{padding:10px 20px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:0.8px;text-transform:uppercase;background:var(--bg3);border-bottom:1px solid var(--border)}
+thead th{padding:10px 20px;text-align:left;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.8px;text-transform:uppercase;background:var(--bg3);border-bottom:1px solid var(--border)}
 tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
 tbody tr:hover{background:var(--bg3)}
 tbody tr:last-child{border-bottom:none}
-tbody td{padding:12px 20px;font-size:13.5px;color:var(--text)}
-
-/* BADGES */
-.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:0.3px}
-.badge-green{background:var(--green-bg);color:var(--green)}
-.badge-red{background:var(--red-bg);color:var(--red)}
-.badge-yellow{background:var(--yellow-bg);color:var(--yellow)}
-.badge-blue{background:var(--accent-glow);color:var(--accent)}
-.badge-purple{background:var(--purple-bg);color:var(--purple)}
-.badge-cyan{background:var(--cyan-bg);color:var(--cyan)}
-.badge-gray{background:#ffffff0f;color:var(--text2)}
-
-/* MODAL */
+tbody td{padding:12px 20px;font-size:13.5px}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-green{background:var(--green-bg);color:var(--green)}.badge-red{background:var(--red-bg);color:var(--red)}.badge-yellow{background:var(--yellow-bg);color:var(--yellow)}.badge-blue{background:var(--accent-glow);color:var(--accent)}.badge-purple{background:var(--purple-bg);color:var(--purple)}.badge-cyan{background:var(--cyan-bg);color:var(--cyan)}.badge-gray{background:#ffffff0f;color:var(--text2)}
 .modal-overlay{display:none;position:fixed;inset:0;background:#00000080;z-index:200;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.open{display:flex}
 .modal{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto}
 .modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg2);z-index:1}
 .modal-title{font-size:16px;font-weight:600}
-.modal-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:4px;border-radius:6px;transition:color .15s}
+.modal-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;border-radius:6px}
 .modal-close:hover{color:var(--text)}
 .modal-body{padding:24px}
 .modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;position:sticky;bottom:0;background:var(--bg2)}
-
-/* FORM */
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 .form-row.single{grid-template-columns:1fr}
 .f-group{display:flex;flex-direction:column;gap:6px}
-.f-group label{font-size:11px;font-weight:600;color:var(--text2);letter-spacing:0.5px;text-transform:uppercase}
+.f-group label{font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.5px;text-transform:uppercase}
 .f-group input,.f-group select,.f-group textarea{padding:10px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:13.5px;font-family:inherit;outline:none;transition:border-color .2s}
 .f-group input:focus,.f-group select:focus,.f-group textarea:focus{border-color:var(--accent)}
 .f-group select option{background:var(--bg3)}
 .f-group textarea{resize:vertical;min-height:80px}
-
-/* ALERTS */
 .alert-list{display:flex;flex-direction:column;gap:8px}
 .alert-item{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)}
-.alert-item.warn{border-left:3px solid var(--yellow)}
-.alert-item.danger{border-left:3px solid var(--red)}
+.alert-item.warn{border-left:3px solid var(--yellow)}.alert-item.danger{border-left:3px solid var(--red)}
 .alert-icon{width:32px;height:32px;border-radius:var(--r);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
 .alert-text{flex:1;font-size:13px}
 .alert-text strong{display:block;font-weight:500;margin-bottom:2px}
 .alert-text span{color:var(--text3);font-size:12px}
-
-/* MOBILE */
 .sidebar-overlay{display:none;position:fixed;inset:0;background:#00000060;z-index:99}
-@media(max-width:768px){
-.sidebar{transform:translateX(-100%)}
-.sidebar.mobile-open{transform:translateX(0)}
-.sidebar-overlay.open{display:block}
-.main{margin-left:0}
-.topbar{left:0}
-.topbar-menu-btn{display:flex}
-.form-row{grid-template-columns:1fr}
-.cards-grid{grid-template-columns:1fr 1fr}
-.page{padding:16px}
-.charts-grid{grid-template-columns:1fr}
-}
-
-/* MISC */
+@media(max-width:768px){.sidebar{transform:translateX(-100%)}.sidebar.mobile-open{transform:translateX(0)}.sidebar-overlay.open{display:block}.main{margin-left:0}.topbar{left:0}.topbar-menu-btn{display:flex}.form-row{grid-template-columns:1fr}.cards-grid{grid-template-columns:1fr 1fr}.page{padding:16px}.charts-grid{grid-template-columns:1fr}}
 .mono{font-family:'IBM Plex Mono',monospace;font-size:13px}
-.text-muted{color:var(--text2)}
 .flex{display:flex;align-items:center;gap:8px}
 .plate{display:inline-block;background:#000;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;padding:3px 10px;border-radius:6px;letter-spacing:1px;border:2px solid #444}
 .progress-bar{height:5px;background:var(--bg4);border-radius:10px;overflow:hidden}
@@ -212,1315 +335,229 @@ tbody td{padding:12px 20px;font-size:13.5px;color:var(--text)}
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;color:var(--text3);text-align:center}
 .empty-state i{font-size:36px;margin-bottom:12px;opacity:.5}
 .empty-state p{font-size:14px}
-.notif-toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#fff;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;animation:fadeIn .3s ease}
+.notif-toast{position:fixed;bottom:24px;right:24px;color:#fff;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;animation:fadeIn .3s ease}
 </style>
 </head>
 <body>
+<div id="loadingOverlay"><div class="spinner"></div><div style="font-size:13px;color:var(--text2)">Carregando dados...</div></div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header"><div class="sidebar-brand"><div class="sidebar-brand-icon"><i class="fa-solid fa-truck-fast"></i></div><div class="sidebar-brand-name">Fleet<span>OS</span></div></div></div>
+  <nav class="sidebar-nav">
+    <div class="nav-section"><div class="nav-label">Principal</div>
+      <div class="nav-item active" onclick="showPage('dashboard')"><i class="fa-solid fa-chart-treemap"></i> Dashboard</div>
+      <div class="nav-item" onclick="showPage('veiculos')"><i class="fa-solid fa-car"></i> Veículos</div>
+      <div class="nav-item" onclick="showPage('abastecimentos')"><i class="fa-solid fa-gas-pump"></i> Abastecimentos</div>
+    </div>
+    <div class="nav-section"><div class="nav-label">Manutenção</div>
+      <div class="nav-item" onclick="showPage('manutencao')"><i class="fa-solid fa-wrench"></i> Preventiva <span class="nav-badge" id="manutBadge">0</span></div>
+      <div class="nav-item" onclick="showPage('os')"><i class="fa-solid fa-file-invoice"></i> OS <span class="nav-badge" id="osBadge">0</span></div>
+    </div>
+    <div class="nav-section"><div class="nav-label">Gestão</div>
+      <div class="nav-item" onclick="showPage('documentos')"><i class="fa-solid fa-folder-open"></i> Documentos <span class="nav-badge" id="docBadge">0</span></div>
+      <div class="nav-item" onclick="showPage('relatorios')"><i class="fa-solid fa-chart-bar"></i> Relatórios</div>
+      <div class="nav-item" onclick="showPage('configuracoes')"><i class="fa-solid fa-gear"></i> Configurações</div>
+    </div>
+  </nav>
+  <div style="padding:12px;border-top:1px solid var(--border)">
+    <div style="padding:10px 12px;background:var(--bg3);border-radius:var(--r);font-size:12px;color:var(--text3);text-align:center"><i class="fa-solid fa-fire" style="color:var(--accent)"></i> Firebase conectado</div>
+  </div>
+</aside>
+<header class="topbar">
+  <button class="topbar-menu-btn" onclick="toggleSidebar()"><i class="fa-solid fa-bars"></i></button>
+  <span class="topbar-title" id="topbarTitle">Dashboard</span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="topbar-btn"><i class="fa-solid fa-bell"></i></div>
+    <div class="topbar-btn"><i class="fa-solid fa-user"></i></div>
+  </div>
+</header>
+<main class="main">
 
-<!-- ==================== LOGIN ==================== -->
-<div id="loginScreen">
-  <div class="login-bg"></div>
-  <div class="login-box">
-    <div class="login-logo">
-      <div class="login-logo-icon"><i class="fa-solid fa-truck-fast"></i></div>
-      <div class="login-logo-text">Fleet<span>OS</span></div>
-    </div>
-    <p class="login-subtitle">Sistema de Gestão de Frota</p>
-    <div class="form-group">
-      <label>Email</label>
-      <input type="email" id="loginEmail" placeholder="admin@empresa.com" value="admin@empresa.com">
-    </div>
-    <div class="form-group">
-      <label>Senha</label>
-      <input type="password" id="loginPass" placeholder="••••••••" value="123456">
-    </div>
-    <button class="btn-login" onclick="doLogin()"><i class="fa-solid fa-right-to-bracket"></i> &nbsp;Entrar no Sistema</button>
-    <div class="login-error" id="loginError"><i class="fa-solid fa-circle-exclamation"></i> E-mail ou senha incorretos.</div>
-    <p class="login-hint">Demo: admin@empresa.com / 123456</p>
+<!-- DASHBOARD -->
+<div class="page active" id="page-dashboard">
+  <div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle" id="dashDate"></div></div><span class="badge badge-green"><i class="fa-solid fa-circle" style="font-size:7px"></i> &nbsp;Firebase ativo</span></div>
+  <div class="cards-grid">
+    <div class="stat-card"><div class="stat-card-header"><div class="stat-card-icon" style="background:#3b82f618;color:var(--accent)"><i class="fa-solid fa-car"></i></div><span class="stat-card-trend trend-up">Frota</span></div><div class="stat-card-value" id="dash-tv">—</div><div class="stat-card-label">Total de Veículos</div></div>
+    <div class="stat-card"><div class="stat-card-header"><div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow)"><i class="fa-solid fa-wrench"></i></div><span class="stat-card-trend trend-warn">Atenção</span></div><div class="stat-card-value" id="dash-mv">—</div><div class="stat-card-label">Em Manutenção</div></div>
+    <div class="stat-card"><div class="stat-card-header"><div class="stat-card-icon" style="background:var(--green-bg);color:var(--green)"><i class="fa-solid fa-dollar-sign"></i></div><span class="stat-card-trend trend-up">Este mês</span></div><div class="stat-card-value" id="dash-gv" style="font-size:18px">—</div><div class="stat-card-label">Gastos do Mês</div></div>
+    <div class="stat-card"><div class="stat-card-header"><div class="stat-card-icon" style="background:var(--red-bg);color:var(--red)"><i class="fa-solid fa-triangle-exclamation"></i></div><span class="stat-card-trend trend-down">Urgente</span></div><div class="stat-card-value" id="dash-pv">—</div><div class="stat-card-label">Prev. Vencidas</div></div>
+    <div class="stat-card"><div class="stat-card-header"><div class="stat-card-icon" style="background:var(--purple-bg);color:var(--purple)"><i class="fa-solid fa-file-circle-exclamation"></i></div><span class="stat-card-trend trend-warn">30 dias</span></div><div class="stat-card-value" id="dash-dv">—</div><div class="stat-card-label">Docs Vencendo</div></div>
+  </div>
+  <div class="charts-grid">
+    <div class="chart-card"><div class="chart-title">Gastos Mensais <span style="font-weight:400;font-size:12px;color:var(--text3)" id="anoChart"></span></div><canvas id="chartG" height="180"></canvas></div>
+    <div class="chart-card"><div class="chart-title">Status das OS</div><canvas id="chartO" height="180"></canvas></div>
+  </div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title">Últimas Ordens de Serviço</span><button class="btn btn-ghost btn-sm" onclick="showPage('os')"><i class="fa-solid fa-arrow-right"></i> Ver todas</button></div>
+    <table><thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Data</th><th>Valor</th></tr></thead><tbody id="dashOsTable"></tbody></table>
   </div>
 </div>
 
-<!-- ==================== APP ==================== -->
-<div id="app">
-  <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
-
-  <!-- SIDEBAR -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="sidebar-brand">
-        <div class="sidebar-brand-icon"><i class="fa-solid fa-truck-fast"></i></div>
-        <div class="sidebar-brand-name">Fleet<span>OS</span></div>
-      </div>
-    </div>
-    <nav class="sidebar-nav">
-      <div class="nav-section">
-        <div class="nav-section-label">Principal</div>
-        <div class="nav-item active" onclick="showPage('dashboard')"><i class="fa-solid fa-chart-treemap"></i> Dashboard</div>
-        <div class="nav-item" onclick="showPage('veiculos')"><i class="fa-solid fa-car"></i> Veículos</div>
-        <div class="nav-item" onclick="showPage('abastecimentos')"><i class="fa-solid fa-gas-pump"></i> Abastecimentos</div>
-      </div>
-      <div class="nav-section">
-        <div class="nav-section-label">Manutenção</div>
-        <div class="nav-item" onclick="showPage('manutencao')"><i class="fa-solid fa-wrench"></i> Preventiva <span class="nav-badge" id="manutBadge">3</span></div>
-        <div class="nav-item" onclick="showPage('os')"><i class="fa-solid fa-file-invoice"></i> OS <span class="nav-badge" id="osBadge">2</span></div>
-      </div>
-      <div class="nav-section">
-        <div class="nav-section-label">Gestão</div>
-        <div class="nav-item" onclick="showPage('documentos')"><i class="fa-solid fa-folder-open"></i> Documentos <span class="nav-badge" id="docBadge">1</span></div>
-        <div class="nav-item" onclick="showPage('relatorios')"><i class="fa-solid fa-chart-bar"></i> Relatórios</div>
-        <div class="nav-item" onclick="showPage('configuracoes')"><i class="fa-solid fa-gear"></i> Configurações</div>
-      </div>
-    </nav>
-    <div class="sidebar-footer">
-      <div class="user-card" onclick="doLogout()">
-        <div class="user-avatar">AD</div>
-        <div class="user-info">
-          <div class="user-name">Admin Sistema</div>
-          <div class="user-role">Clique para sair</div>
-        </div>
-        <i class="fa-solid fa-arrow-right-from-bracket" style="color:var(--text3);font-size:13px"></i>
-      </div>
-    </div>
-  </aside>
-
-  <!-- TOPBAR -->
-  <header class="topbar">
-    <button class="topbar-menu-btn" onclick="toggleSidebar()"><i class="fa-solid fa-bars"></i></button>
-    <span class="topbar-title" id="topbarTitle">Dashboard</span>
-    <div class="topbar-actions">
-      <div class="topbar-btn" title="Notificações"><i class="fa-solid fa-bell"></i><div class="notif-dot"></div></div>
-      <div class="topbar-btn" title="Perfil"><i class="fa-solid fa-user"></i></div>
-    </div>
-  </header>
-
-  <!-- MAIN CONTENT -->
-  <main class="main">
-
-    <!-- ===== DASHBOARD ===== -->
-    <div class="page active" id="page-dashboard">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Dashboard</div>
-          <div class="page-subtitle" id="dashDate"></div>
-        </div>
-        <span class="badge badge-green"><i class="fa-solid fa-circle" style="font-size:7px"></i> &nbsp;Sistema operacional</span>
-      </div>
-      <div class="cards-grid">
-        <div class="stat-card">
-          <div class="stat-card-header">
-            <div class="stat-card-icon" style="background:#3b82f618;color:var(--accent)"><i class="fa-solid fa-car"></i></div>
-            <span class="stat-card-trend up">Frota ativa</span>
-          </div>
-          <div class="stat-card-value" id="dash-total-v">0</div>
-          <div class="stat-card-label">Total de Veículos</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-header">
-            <div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow)"><i class="fa-solid fa-wrench"></i></div>
-            <span class="stat-card-trend warn">Atenção</span>
-          </div>
-          <div class="stat-card-value" id="dash-manut-v">0</div>
-          <div class="stat-card-label">Em Manutenção</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-header">
-            <div class="stat-card-icon" style="background:var(--green-bg);color:var(--green)"><i class="fa-solid fa-dollar-sign"></i></div>
-            <span class="stat-card-trend up">Este mês</span>
-          </div>
-          <div class="stat-card-value" id="dash-gastos-v" style="font-size:18px">R$ 0</div>
-          <div class="stat-card-label">Gastos do Mês</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-header">
-            <div class="stat-card-icon" style="background:var(--red-bg);color:var(--red)"><i class="fa-solid fa-triangle-exclamation"></i></div>
-            <span class="stat-card-trend down">Urgente</span>
-          </div>
-          <div class="stat-card-value" id="dash-prev-v">0</div>
-          <div class="stat-card-label">Prev. Vencidas</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-header">
-            <div class="stat-card-icon" style="background:var(--purple-bg);color:var(--purple)"><i class="fa-solid fa-file-circle-exclamation"></i></div>
-            <span class="stat-card-trend warn">30 dias</span>
-          </div>
-          <div class="stat-card-value" id="dash-docs-v">0</div>
-          <div class="stat-card-label">Docs Vencendo</div>
-        </div>
-      </div>
-      <div class="charts-grid">
-        <div class="chart-card">
-          <div class="chart-card-title">Gastos Mensais <span style="font-weight:400;font-size:12px;color:var(--text3)" id="anoChart"></span></div>
-          <canvas id="chartGastos" height="180"></canvas>
-        </div>
-        <div class="chart-card">
-          <div class="chart-card-title">Status das OS</div>
-          <canvas id="chartOS" height="180"></canvas>
-        </div>
-      </div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title">Últimas Ordens de Serviço</span>
-          <button class="btn btn-ghost btn-sm" onclick="showPage('os')"><i class="fa-solid fa-arrow-right"></i> Ver todas</button>
-        </div>
-        <table>
-          <thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Data</th><th>Valor</th></tr></thead>
-          <tbody id="dashOsTable"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ===== VEÍCULOS ===== -->
-    <div class="page" id="page-veiculos">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Veículos</div>
-          <div class="page-subtitle">Gerenciamento da frota</div>
-        </div>
-        <button class="btn btn-primary" onclick="openModal('modalVeiculo',true)"><i class="fa-solid fa-plus"></i> Novo Veículo</button>
-      </div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title" id="veiculoCount">0 veículo(s)</span>
-          <div class="table-actions">
-            <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar veículo..." oninput="filterTable('veiculoTable',this.value)"></div>
-          </div>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Placa</th><th>Modelo</th><th>Marca</th><th>Ano</th><th>KM Atual</th><th>Combustível</th><th>Status</th><th>Ações</th></tr></thead>
-          <tbody id="veiculoTable"></tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== ABASTECIMENTOS ===== -->
-    <div class="page" id="page-abastecimentos">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Abastecimentos</div>
-          <div class="page-subtitle">Controle de combustível</div>
-        </div>
-        <button class="btn btn-primary" onclick="openModal('modalAbast',true)"><i class="fa-solid fa-plus"></i> Registrar</button>
-      </div>
-      <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
-        <div class="stat-card">
-          <div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow);margin-bottom:12px"><i class="fa-solid fa-gas-pump"></i></div>
-          <div class="stat-card-value" id="stat-litros" style="font-size:20px">0 L</div>
-          <div class="stat-card-label">Total Litros (mês)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-icon" style="background:var(--green-bg);color:var(--green);margin-bottom:12px"><i class="fa-solid fa-dollar-sign"></i></div>
-          <div class="stat-card-value" id="stat-valor-abast" style="font-size:18px">R$ 0</div>
-          <div class="stat-card-label">Gasto (mês)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-icon" style="background:var(--cyan-bg);color:var(--cyan);margin-bottom:12px"><i class="fa-solid fa-gauge-high"></i></div>
-          <div class="stat-card-value" id="stat-consumo" style="font-size:20px">— km/L</div>
-          <div class="stat-card-label">Consumo médio</div>
-        </div>
-      </div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title">Histórico de Abastecimentos</span>
-          <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('abastTable',this.value)"></div>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Data</th><th>Veículo</th><th>Posto</th><th>Litros</th><th>Valor Total</th><th>KM</th><th>Consumo</th><th>Ações</th></tr></thead>
-          <tbody id="abastTable"></tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== MANUTENÇÃO PREVENTIVA ===== -->
-    <div class="page" id="page-manutencao">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Manutenção Preventiva</div>
-          <div class="page-subtitle">Controle de revisões e trocas</div>
-        </div>
-        <button class="btn btn-primary" onclick="openModal('modalManut',true)"><i class="fa-solid fa-plus"></i> Nova Manutenção</button>
-      </div>
-      <div id="alertsManut" class="alert-list" style="margin-bottom:20px"></div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title">Histórico de Manutenções</span>
-          <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('manutTable',this.value)"></div>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Veículo</th><th>Tipo</th><th>KM Troca</th><th>Próx. Troca KM</th><th>Progresso</th><th>Data</th><th>Status</th><th>Ações</th></tr></thead>
-          <tbody id="manutTable"></tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== OS ===== -->
-    <div class="page" id="page-os">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Ordens de Serviço</div>
-          <div class="page-subtitle">Controle de serviços e reparos</div>
-        </div>
-        <button class="btn btn-primary" onclick="openModal('modalOS',true)"><i class="fa-solid fa-plus"></i> Nova OS</button>
-      </div>
-      <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-        <div class="stat-card"><div class="stat-card-value" id="os-abertas" style="color:var(--accent)">0</div><div class="stat-card-label">Abertas</div></div>
-        <div class="stat-card"><div class="stat-card-value" id="os-andamento" style="color:var(--yellow)">0</div><div class="stat-card-label">Em Andamento</div></div>
-        <div class="stat-card"><div class="stat-card-value" id="os-aguardando" style="color:var(--purple)">0</div><div class="stat-card-label">Aguard. Peça</div></div>
-        <div class="stat-card"><div class="stat-card-value" id="os-finalizadas" style="color:var(--green)">0</div><div class="stat-card-label">Finalizadas</div></div>
-        <div class="stat-card"><div class="stat-card-value" id="os-valor-total" style="font-size:18px">R$ 0</div><div class="stat-card-label">Valor Total</div></div>
-      </div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title">Ordens de Serviço</span>
-          <div class="table-actions">
-            <select class="btn btn-ghost btn-sm" onchange="filterOS(this.value)" style="cursor:pointer">
-              <option value="">Todos os status</option>
-              <option value="aberta">Aberta</option>
-              <option value="em andamento">Em Andamento</option>
-              <option value="aguardando peça">Aguard. Peça</option>
-              <option value="finalizada">Finalizada</option>
-              <option value="cancelada">Cancelada</option>
-            </select>
-            <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar OS..." oninput="filterTable('osTable',this.value)"></div>
-          </div>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Data Abertura</th><th>Valor Total</th><th>Tempo Parado</th><th>Ações</th></tr></thead>
-          <tbody id="osTable"></tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== DOCUMENTOS ===== -->
-    <div class="page" id="page-documentos">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Documentos</div>
-          <div class="page-subtitle">Vencimentos e renovações</div>
-        </div>
-        <button class="btn btn-primary" onclick="openModal('modalDoc',true)"><i class="fa-solid fa-plus"></i> Novo Documento</button>
-      </div>
-      <div id="alertsDocs" class="alert-list" style="margin-bottom:20px"></div>
-      <div class="table-card">
-        <div class="table-card-header">
-          <span class="table-card-title">Documentos da Frota</span>
-          <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('docTable',this.value)"></div>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Veículo</th><th>Tipo</th><th>Vencimento</th><th>Dias Restantes</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>
-          <tbody id="docTable"></tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== RELATÓRIOS ===== -->
-    <div class="page" id="page-relatorios">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Relatórios</div>
-          <div class="page-subtitle">Análises e exportações</div>
-        </div>
-      </div>
-      <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
-        <div class="stat-card" style="cursor:pointer" onclick="gerarRelatorio('custoVeiculo')">
-          <div class="stat-card-icon" style="background:var(--accent-glow);color:var(--accent);margin-bottom:12px"><i class="fa-solid fa-car-side"></i></div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:4px">Custo por Veículo</div>
-          <div class="stat-card-label">Análise de gastos individuais</div>
-          <div class="flex" style="margin-top:16px">
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRelatorio()"><i class="fa-solid fa-print"></i> PDF</button>
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportarCSV('custoVeiculo')"><i class="fa-solid fa-file-excel"></i> Excel</button>
-          </div>
-        </div>
-        <div class="stat-card" style="cursor:pointer" onclick="gerarRelatorio('combustivel')">
-          <div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow);margin-bottom:12px"><i class="fa-solid fa-gas-pump"></i></div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:4px">Gasto Combustível</div>
-          <div class="stat-card-label">Histórico e consumo médio</div>
-          <div class="flex" style="margin-top:16px">
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRelatorio()"><i class="fa-solid fa-print"></i> PDF</button>
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportarCSV('combustivel')"><i class="fa-solid fa-file-excel"></i> Excel</button>
-          </div>
-        </div>
-        <div class="stat-card" style="cursor:pointer" onclick="gerarRelatorio('os')">
-          <div class="stat-card-icon" style="background:var(--green-bg);color:var(--green);margin-bottom:12px"><i class="fa-solid fa-file-invoice"></i></div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:4px">Histórico de OS</div>
-          <div class="stat-card-label">Ordens de serviço detalhadas</div>
-          <div class="flex" style="margin-top:16px">
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRelatorio()"><i class="fa-solid fa-print"></i> PDF</button>
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportarCSV('os')"><i class="fa-solid fa-file-excel"></i> Excel</button>
-          </div>
-        </div>
-        <div class="stat-card" style="cursor:pointer" onclick="gerarRelatorio('docs')">
-          <div class="stat-card-icon" style="background:var(--red-bg);color:var(--red);margin-bottom:12px"><i class="fa-solid fa-folder-open"></i></div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:4px">Documentos Vencidos</div>
-          <div class="stat-card-label">Alertas de vencimento</div>
-          <div class="flex" style="margin-top:16px">
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRelatorio()"><i class="fa-solid fa-print"></i> PDF</button>
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportarCSV('docs')"><i class="fa-solid fa-file-excel"></i> Excel</button>
-          </div>
-        </div>
-      </div>
-      <div class="table-card" id="relatorioResult" style="display:none;margin-top:8px">
-        <div class="table-card-header">
-          <span class="table-card-title" id="relatorioTitle">Relatório</span>
-          <div class="flex">
-            <button class="btn btn-ghost btn-sm" onclick="imprimirRelatorio()"><i class="fa-solid fa-print"></i> Imprimir / PDF</button>
-            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('relatorioResult').style.display='none'"><i class="fa-solid fa-x"></i></button>
-          </div>
-        </div>
-        <div id="relatorioBody" style="padding:20px;overflow-x:auto"></div>
-      </div>
-    </div>
-
-    <!-- ===== CONFIGURAÇÕES ===== -->
-    <div class="page" id="page-configuracoes">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Configurações</div>
-          <div class="page-subtitle">Dados da empresa e sistema</div>
-        </div>
-        <button class="btn btn-primary" onclick="saveConfig()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-        <div class="table-card" style="padding:24px">
-          <div class="table-card-title" style="margin-bottom:20px;font-size:15px"><i class="fa-solid fa-building" style="color:var(--accent)"></i> &nbsp;Dados da Empresa</div>
-          <div class="form-row single"><div class="f-group"><label>Nome da Empresa</label><input type="text" id="cfg-empresa" value="Transportes Silva Ltda"></div></div>
-          <div class="form-row single"><div class="f-group"><label>CNPJ</label><input type="text" id="cfg-cnpj" value="12.345.678/0001-90"></div></div>
-          <div class="form-row single"><div class="f-group"><label>Endereço</label><input type="text" id="cfg-endereco" value="Av. das Indústrias, 1500 - SP"></div></div>
-          <div class="form-row single"><div class="f-group"><label>Telefone</label><input type="text" id="cfg-telefone" value="(11) 3456-7890"></div></div>
-          <div class="form-row single"><div class="f-group"><label>E-mail</label><input type="text" id="cfg-email" value="frota@transportesilva.com.br"></div></div>
-        </div>
-        <div class="table-card" style="padding:24px">
-          <div class="table-card-title" style="margin-bottom:20px;font-size:15px"><i class="fa-solid fa-sliders" style="color:var(--accent)"></i> &nbsp;Parâmetros do Sistema</div>
-          <div class="form-row single"><div class="f-group"><label>Alertar preventiva (km antes)</label><input type="number" id="cfg-alerta-km" value="500"></div></div>
-          <div class="form-row single"><div class="f-group"><label>Alertar documento (dias antes)</label><input type="number" id="cfg-alerta-dias" value="30"></div></div>
-          <div class="form-row single"><div class="f-group"><label>Moeda</label><select id="cfg-moeda"><option value="BRL" selected>BRL - Real Brasileiro</option><option value="USD">USD - Dólar</option><option value="EUR">EUR - Euro</option></select></div></div>
-          <div class="form-row single"><div class="f-group"><label>Versão</label><input type="text" value="FleetOS v1.0.0" disabled style="opacity:.5"></div></div>
-          <div style="margin-top:16px;padding:16px;background:var(--accent-glow);border:1px solid #3b82f620;border-radius:var(--r)">
-            <p style="font-size:13px;color:var(--accent);font-weight:500"><i class="fa-solid fa-fire"></i> &nbsp;Conectar Firebase</p>
-            <p style="font-size:12px;color:var(--text2);margin-top:6px;line-height:1.6">Para usar em produção, substitua o objeto <code style="background:var(--bg4);padding:1px 6px;border-radius:4px">DB</code> pelas chamadas reais ao Firestore e adicione o SDK do Firebase com suas credenciais.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-  </main>
+<!-- VEÍCULOS -->
+<div class="page" id="page-veiculos">
+  <div class="page-header"><div><div class="page-title">Veículos</div><div class="page-subtitle">Gerenciamento da frota</div></div><button class="btn btn-primary" onclick="openModal('mV',true)"><i class="fa-solid fa-plus"></i> Novo Veículo</button></div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title" id="vCount">Carregando...</span><div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('tV',this.value)"></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Placa</th><th>Modelo</th><th>Marca</th><th>Ano</th><th>KM Atual</th><th>Combustível</th><th>Status</th><th>Ações</th></tr></thead><tbody id="tV"></tbody></table></div>
+  </div>
 </div>
 
-<!-- ==================== MODAIS ==================== -->
+<!-- ABASTECIMENTOS -->
+<div class="page" id="page-abastecimentos">
+  <div class="page-header"><div><div class="page-title">Abastecimentos</div><div class="page-subtitle">Controle de combustível</div></div><button class="btn btn-primary" onclick="openModal('mA',true)"><i class="fa-solid fa-plus"></i> Registrar</button></div>
+  <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+    <div class="stat-card"><div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow);margin-bottom:12px"><i class="fa-solid fa-gas-pump"></i></div><div class="stat-card-value" id="sL" style="font-size:20px">— L</div><div class="stat-card-label">Total Litros (mês)</div></div>
+    <div class="stat-card"><div class="stat-card-icon" style="background:var(--green-bg);color:var(--green);margin-bottom:12px"><i class="fa-solid fa-dollar-sign"></i></div><div class="stat-card-value" id="sV" style="font-size:18px">—</div><div class="stat-card-label">Gasto (mês)</div></div>
+    <div class="stat-card"><div class="stat-card-icon" style="background:var(--cyan-bg);color:var(--cyan);margin-bottom:12px"><i class="fa-solid fa-gauge-high"></i></div><div class="stat-card-value" id="sC" style="font-size:20px">— km/L</div><div class="stat-card-label">Consumo médio</div></div>
+  </div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title">Histórico de Abastecimentos</span><div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('tA',this.value)"></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Data</th><th>Veículo</th><th>Posto</th><th>Litros</th><th>Valor Total</th><th>KM</th><th>Consumo</th><th>Ações</th></tr></thead><tbody id="tA"></tbody></table></div>
+  </div>
+</div>
 
-<!-- Modal Veículo -->
-<div class="modal-overlay" id="modalVeiculo">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title" id="modalVeiculoTitle">Novo Veículo</span>
-      <button class="modal-close" onclick="closeModal('modalVeiculo')"><i class="fa-solid fa-x"></i></button>
+<!-- MANUTENÇÃO -->
+<div class="page" id="page-manutencao">
+  <div class="page-header"><div><div class="page-title">Manutenção Preventiva</div><div class="page-subtitle">Controle de revisões</div></div><button class="btn btn-primary" onclick="openModal('mM',true)"><i class="fa-solid fa-plus"></i> Nova Manutenção</button></div>
+  <div id="alertsM" class="alert-list" style="margin-bottom:20px"></div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title">Histórico</span><div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('tM',this.value)"></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Veículo</th><th>Tipo</th><th>KM Troca</th><th>Próx. Troca</th><th>Progresso</th><th>Data</th><th>Status</th><th>Ações</th></tr></thead><tbody id="tM"></tbody></table></div>
+  </div>
+</div>
+
+<!-- OS -->
+<div class="page" id="page-os">
+  <div class="page-header"><div><div class="page-title">Ordens de Serviço</div><div class="page-subtitle">Controle de serviços</div></div><button class="btn btn-primary" onclick="openModal('mO',true)"><i class="fa-solid fa-plus"></i> Nova OS</button></div>
+  <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="stat-card"><div class="stat-card-value" id="os-ab" style="color:var(--accent)">0</div><div class="stat-card-label">Abertas</div></div>
+    <div class="stat-card"><div class="stat-card-value" id="os-an" style="color:var(--yellow)">0</div><div class="stat-card-label">Em Andamento</div></div>
+    <div class="stat-card"><div class="stat-card-value" id="os-ag" style="color:var(--purple)">0</div><div class="stat-card-label">Aguard. Peça</div></div>
+    <div class="stat-card"><div class="stat-card-value" id="os-fi" style="color:var(--green)">0</div><div class="stat-card-label">Finalizadas</div></div>
+    <div class="stat-card"><div class="stat-card-value" id="os-vt2" style="font-size:18px">R$ 0</div><div class="stat-card-label">Valor Total</div></div>
+  </div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title">Ordens de Serviço</span><div class="flex"><select class="btn btn-ghost btn-sm" onchange="filterOS(this.value)" style="cursor:pointer"><option value="">Todos</option><option value="aberta">Aberta</option><option value="em andamento">Em Andamento</option><option value="aguardando peça">Aguard. Peça</option><option value="finalizada">Finalizada</option><option value="cancelada">Cancelada</option></select><div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('tOS',this.value)"></div></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Data Abertura</th><th>Valor Total</th><th>Tempo</th><th>Ações</th></tr></thead><tbody id="tOS"></tbody></table></div>
+  </div>
+</div>
+
+<!-- DOCUMENTOS -->
+<div class="page" id="page-documentos">
+  <div class="page-header"><div><div class="page-title">Documentos</div><div class="page-subtitle">Vencimentos e renovações</div></div><button class="btn btn-primary" onclick="openModal('mD',true)"><i class="fa-solid fa-plus"></i> Novo Documento</button></div>
+  <div id="alertsD" class="alert-list" style="margin-bottom:20px"></div>
+  <div class="table-card">
+    <div class="tc-header"><span class="tc-title">Documentos</span><div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Buscar..." oninput="filterTable('tD',this.value)"></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Veículo</th><th>Tipo</th><th>Vencimento</th><th>Dias Restantes</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody id="tD"></tbody></table></div>
+  </div>
+</div>
+
+<!-- RELATÓRIOS -->
+<div class="page" id="page-relatorios">
+  <div class="page-header"><div><div class="page-title">Relatórios</div><div class="page-subtitle">Análises e exportações</div></div></div>
+  <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+    <div class="stat-card" style="cursor:pointer" onclick="gerarRel('cv')"><div class="stat-card-icon" style="background:var(--accent-glow);color:var(--accent);margin-bottom:12px"><i class="fa-solid fa-car-side"></i></div><div style="font-size:14px;font-weight:600;margin-bottom:4px">Custo por Veículo</div><div class="stat-card-label">Análise de gastos individuais</div><div class="flex" style="margin-top:16px"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRel()"><i class="fa-solid fa-print"></i> PDF</button><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportCSV('cv')"><i class="fa-solid fa-file-excel"></i> Excel</button></div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="gerarRel('cb')"><div class="stat-card-icon" style="background:var(--yellow-bg);color:var(--yellow);margin-bottom:12px"><i class="fa-solid fa-gas-pump"></i></div><div style="font-size:14px;font-weight:600;margin-bottom:4px">Gasto Combustível</div><div class="stat-card-label">Histórico e consumo médio</div><div class="flex" style="margin-top:16px"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRel()"><i class="fa-solid fa-print"></i> PDF</button><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportCSV('cb')"><i class="fa-solid fa-file-excel"></i> Excel</button></div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="gerarRel('os')"><div class="stat-card-icon" style="background:var(--green-bg);color:var(--green);margin-bottom:12px"><i class="fa-solid fa-file-invoice"></i></div><div style="font-size:14px;font-weight:600;margin-bottom:4px">Histórico de OS</div><div class="stat-card-label">Ordens de serviço detalhadas</div><div class="flex" style="margin-top:16px"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRel()"><i class="fa-solid fa-print"></i> PDF</button><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportCSV('os')"><i class="fa-solid fa-file-excel"></i> Excel</button></div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="gerarRel('docs')"><div class="stat-card-icon" style="background:var(--red-bg);color:var(--red);margin-bottom:12px"><i class="fa-solid fa-folder-open"></i></div><div style="font-size:14px;font-weight:600;margin-bottom:4px">Docs Vencidos</div><div class="stat-card-label">Alertas de vencimento</div><div class="flex" style="margin-top:16px"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();imprimirRel()"><i class="fa-solid fa-print"></i> PDF</button><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();exportCSV('docs')"><i class="fa-solid fa-file-excel"></i> Excel</button></div></div>
+  </div>
+  <div class="table-card" id="relResult" style="display:none;margin-top:8px">
+    <div class="tc-header"><span class="tc-title" id="relTitle">Relatório</span><div class="flex"><button class="btn btn-ghost btn-sm" onclick="imprimirRel()"><i class="fa-solid fa-print"></i> PDF</button><button class="btn btn-ghost btn-sm" onclick="document.getElementById('relResult').style.display='none'"><i class="fa-solid fa-x"></i></button></div></div>
+    <div id="relBody" style="padding:20px;overflow-x:auto"></div>
+  </div>
+</div>
+
+<!-- CONFIGURAÇÕES -->
+<div class="page" id="page-configuracoes">
+  <div class="page-header"><div><div class="page-title">Configurações</div><div class="page-subtitle">Dados da empresa e sistema</div></div><button class="btn btn-primary" onclick="saveConfig()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="table-card" style="padding:24px">
+      <div style="font-size:15px;font-weight:600;margin-bottom:20px"><i class="fa-solid fa-building" style="color:var(--accent)"></i> &nbsp;Dados da Empresa</div>
+      <div class="form-row single"><div class="f-group"><label>Nome da Empresa</label><input type="text" id="cfg-empresa" value="Transportes Silva Ltda"></div></div>
+      <div class="form-row single"><div class="f-group"><label>CNPJ</label><input type="text" id="cfg-cnpj" value="12.345.678/0001-90"></div></div>
+      <div class="form-row single"><div class="f-group"><label>Endereço</label><input type="text" id="cfg-endereco" value="Av. das Indústrias, 1500 - SP"></div></div>
+      <div class="form-row single"><div class="f-group"><label>Telefone</label><input type="text" id="cfg-telefone" value="(11) 3456-7890"></div></div>
+      <div class="form-row single"><div class="f-group"><label>E-mail</label><input type="text" id="cfg-email" value="frota@empresa.com.br"></div></div>
     </div>
-    <div class="modal-body">
-      <input type="hidden" id="v-id">
-      <div class="form-row">
-        <div class="f-group"><label>Placa *</label><input type="text" id="v-placa" placeholder="ABC-1D23"></div>
-        <div class="f-group"><label>Status</label><select id="v-status"><option value="ativo">Ativo</option><option value="em manutenção">Em Manutenção</option><option value="inativo">Inativo</option></select></div>
+    <div class="table-card" style="padding:24px">
+      <div style="font-size:15px;font-weight:600;margin-bottom:20px"><i class="fa-solid fa-sliders" style="color:var(--accent)"></i> &nbsp;Parâmetros do Sistema</div>
+      <div class="form-row single"><div class="f-group"><label>Alertar preventiva (km antes)</label><input type="number" id="cfg-alerta-km" value="500"></div></div>
+      <div class="form-row single"><div class="f-group"><label>Alertar documento (dias antes)</label><input type="number" id="cfg-alerta-dias" value="30"></div></div>
+      <div class="form-row single"><div class="f-group"><label>Versão</label><input type="text" value="FleetOS v1.0.0 + Firebase" disabled style="opacity:.5"></div></div>
+      <div style="margin-top:16px;padding:16px;background:var(--green-bg);border:1px solid #22c55e25;border-radius:var(--r)">
+        <p style="font-size:13px;color:var(--green);font-weight:500"><i class="fa-solid fa-circle-check"></i> &nbsp;Firebase Firestore conectado</p>
+        <p style="font-size:12px;color:var(--text2);margin-top:6px">Projeto: <code style="background:var(--bg4);padding:1px 6px;border-radius:4px">gestaodefrota-92813</code><br>Todos os dados são salvos automaticamente na nuvem.</p>
       </div>
-      <div class="form-row">
-        <div class="f-group"><label>Marca *</label><input type="text" id="v-marca" placeholder="Volkswagen"></div>
-        <div class="f-group"><label>Modelo *</label><input type="text" id="v-modelo" placeholder="Constellation 17.280"></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Ano</label><input type="number" id="v-ano" placeholder="2024"></div>
-        <div class="f-group"><label>KM Atual</label><input type="number" id="v-km" placeholder="0"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Combustível</label><select id="v-comb"><option>Diesel</option><option>Gasolina</option><option>Etanol</option><option>GNV</option><option>Elétrico</option><option>Flex</option></select></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Observações</label><textarea id="v-obs" placeholder="Informações adicionais..."></textarea></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modalVeiculo')">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarVeiculo()"><i class="fa-solid fa-floppy-disk"></i> Salvar Veículo</button>
     </div>
   </div>
 </div>
 
-<!-- Modal Abastecimento -->
-<div class="modal-overlay" id="modalAbast">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title">Registrar Abastecimento</span>
-      <button class="modal-close" onclick="closeModal('modalAbast')"><i class="fa-solid fa-x"></i></button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="ab-id">
-      <div class="form-row">
-        <div class="f-group"><label>Veículo *</label><select id="ab-veiculo" onchange="calcConsumo()"></select></div>
-        <div class="f-group"><label>Data *</label><input type="date" id="ab-data"></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Posto</label><input type="text" id="ab-posto" placeholder="Auto Posto Central"></div>
-        <div class="f-group"><label>KM Atual *</label><input type="number" id="ab-km" placeholder="0" oninput="calcConsumo()"></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Litros *</label><input type="number" id="ab-litros" step="0.01" placeholder="0.00" oninput="calcConsumo()"></div>
-        <div class="f-group"><label>Valor Total (R$) *</label><input type="number" id="ab-valor" step="0.01" placeholder="0.00"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Consumo Calculado</label><input type="text" id="ab-consumo-calc" placeholder="Informe litros e KM" disabled style="opacity:.8;color:var(--cyan);font-weight:600"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Observações</label><textarea id="ab-obs" placeholder=""></textarea></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modalAbast')">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarAbastecimento()"><i class="fa-solid fa-floppy-disk"></i> Registrar</button>
-    </div>
+</main>
+
+<!-- MODAL VEÍCULO -->
+<div class="modal-overlay" id="mV">
+  <div class="modal"><div class="modal-header"><span class="modal-title" id="mV-title">Novo Veículo</span><button class="modal-close" onclick="closeModal('mV')"><i class="fa-solid fa-x"></i></button></div>
+  <div class="modal-body"><input type="hidden" id="v-id">
+    <div class="form-row"><div class="f-group"><label>Placa *</label><input type="text" id="v-placa" placeholder="ABC-1D23"></div><div class="f-group"><label>Status</label><select id="v-status"><option value="ativo">Ativo</option><option value="em manutenção">Em Manutenção</option><option value="inativo">Inativo</option></select></div></div>
+    <div class="form-row"><div class="f-group"><label>Marca *</label><input type="text" id="v-marca"></div><div class="f-group"><label>Modelo *</label><input type="text" id="v-modelo"></div></div>
+    <div class="form-row"><div class="f-group"><label>Ano</label><input type="number" id="v-ano"></div><div class="f-group"><label>KM Atual</label><input type="number" id="v-km"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Combustível</label><select id="v-comb"><option>Diesel</option><option>Gasolina</option><option>Etanol</option><option>GNV</option><option>Elétrico</option><option>Flex</option></select></div></div>
+    <div class="form-row single"><div class="f-group"><label>Observações</label><textarea id="v-obs"></textarea></div></div>
   </div>
+  <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('mV')">Cancelar</button><button class="btn btn-primary" onclick="salvarV()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button></div></div>
 </div>
 
-<!-- Modal Manutenção -->
-<div class="modal-overlay" id="modalManut">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title" id="modalManutTitle">Nova Manutenção Preventiva</span>
-      <button class="modal-close" onclick="closeModal('modalManut')"><i class="fa-solid fa-x"></i></button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="mn-id">
-      <div class="form-row">
-        <div class="f-group"><label>Veículo *</label><select id="mn-veiculo"></select></div>
-        <div class="f-group"><label>Data *</label><input type="date" id="mn-data"></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Tipo de Manutenção</label><select id="mn-tipo"><option>Troca de Óleo</option><option>Revisão de Freios</option><option>Troca de Filtro de Ar</option><option>Alinhamento e Balanceamento</option><option>Troca de Pneus</option><option>Revisão Geral</option><option>Troca de Correia</option><option>Outro</option></select></div>
-        <div class="f-group"><label>KM na Troca *</label><input type="number" id="mn-km" placeholder="0"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>KM Próxima Troca *</label><input type="number" id="mn-km-prox" placeholder="0"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Observações</label><textarea id="mn-obs" placeholder=""></textarea></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modalManut')">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarManutencao()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button>
-    </div>
+<!-- MODAL ABASTECIMENTO -->
+<div class="modal-overlay" id="mA">
+  <div class="modal"><div class="modal-header"><span class="modal-title">Registrar Abastecimento</span><button class="modal-close" onclick="closeModal('mA')"><i class="fa-solid fa-x"></i></button></div>
+  <div class="modal-body"><input type="hidden" id="ab-id">
+    <div class="form-row"><div class="f-group"><label>Veículo *</label><select id="ab-veiculo" onchange="calcC()"></select></div><div class="f-group"><label>Data *</label><input type="date" id="ab-data"></div></div>
+    <div class="form-row"><div class="f-group"><label>Posto</label><input type="text" id="ab-posto"></div><div class="f-group"><label>KM Atual</label><input type="number" id="ab-km" oninput="calcC()"></div></div>
+    <div class="form-row"><div class="f-group"><label>Litros *</label><input type="number" id="ab-litros" step="0.01" oninput="calcC()"></div><div class="f-group"><label>Valor Total (R$)</label><input type="number" id="ab-valor" step="0.01"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Consumo Calculado</label><input type="text" id="ab-calc" disabled style="color:var(--cyan);font-weight:600"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Observações</label><textarea id="ab-obs"></textarea></div></div>
   </div>
+  <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('mA')">Cancelar</button><button class="btn btn-primary" onclick="salvarA()"><i class="fa-solid fa-floppy-disk"></i> Registrar</button></div></div>
 </div>
 
-<!-- Modal OS -->
-<div class="modal-overlay" id="modalOS">
-  <div class="modal" style="max-width:700px">
-    <div class="modal-header">
-      <span class="modal-title" id="modalOSTitle">Nova Ordem de Serviço</span>
-      <button class="modal-close" onclick="closeModal('modalOS')"><i class="fa-solid fa-x"></i></button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="os-id">
-      <div class="form-row">
-        <div class="f-group"><label>Nº OS</label><input type="text" id="os-num" disabled style="opacity:.7;font-family:'IBM Plex Mono',monospace;color:var(--accent)"></div>
-        <div class="f-group"><label>Data Abertura *</label><input type="date" id="os-data"></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Veículo *</label><select id="os-veiculo"></select></div>
-        <div class="f-group"><label>Tipo</label><select id="os-tipo"><option>Corretiva</option><option>Preventiva</option><option>Preditiva</option><option>Acidente</option></select></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Status</label><select id="os-status"><option value="aberta">Aberta</option><option value="em andamento">Em Andamento</option><option value="aguardando peça">Aguardando Peça</option><option value="finalizada">Finalizada</option><option value="cancelada">Cancelada</option></select></div>
-        <div class="f-group"><label>Tempo Parado (horas)</label><input type="number" id="os-tempo" placeholder="0"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Descrição do Problema</label><textarea id="os-descricao" placeholder="Descreva o problema reportado..."></textarea></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Serviços Executados</label><textarea id="os-servicos" placeholder="Serviços realizados..."></textarea></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Peças Utilizadas</label><textarea id="os-pecas" placeholder="Lista de peças trocadas..."></textarea></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Valor Peças (R$)</label><input type="number" id="os-val-pecas" step="0.01" placeholder="0.00" oninput="calcOS()"></div>
-        <div class="f-group"><label>Valor Mão de Obra (R$)</label><input type="number" id="os-val-mao" step="0.01" placeholder="0.00" oninput="calcOS()"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Valor Total</label><input type="text" id="os-val-total" disabled style="opacity:.9;color:var(--green);font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:16px"></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modalOS')">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarOS()"><i class="fa-solid fa-floppy-disk"></i> Salvar OS</button>
-    </div>
+<!-- MODAL MANUTENÇÃO -->
+<div class="modal-overlay" id="mM">
+  <div class="modal"><div class="modal-header"><span class="modal-title" id="mM-title">Nova Manutenção Preventiva</span><button class="modal-close" onclick="closeModal('mM')"><i class="fa-solid fa-x"></i></button></div>
+  <div class="modal-body"><input type="hidden" id="mn-id">
+    <div class="form-row"><div class="f-group"><label>Veículo *</label><select id="mn-veiculo"></select></div><div class="f-group"><label>Data</label><input type="date" id="mn-data"></div></div>
+    <div class="form-row"><div class="f-group"><label>Tipo</label><select id="mn-tipo"><option>Troca de Óleo</option><option>Revisão de Freios</option><option>Troca de Filtro de Ar</option><option>Alinhamento e Balanceamento</option><option>Troca de Pneus</option><option>Revisão Geral</option><option>Troca de Correia</option><option>Outro</option></select></div><div class="f-group"><label>KM na Troca *</label><input type="number" id="mn-km"></div></div>
+    <div class="form-row single"><div class="f-group"><label>KM Próxima Troca *</label><input type="number" id="mn-km2"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Observações</label><textarea id="mn-obs"></textarea></div></div>
   </div>
+  <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('mM')">Cancelar</button><button class="btn btn-primary" onclick="salvarM()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button></div></div>
 </div>
 
-<!-- Modal Documento -->
-<div class="modal-overlay" id="modalDoc">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title" id="modalDocTitle">Novo Documento</span>
-      <button class="modal-close" onclick="closeModal('modalDoc')"><i class="fa-solid fa-x"></i></button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="dc-id">
-      <div class="form-row">
-        <div class="f-group"><label>Veículo *</label><select id="dc-veiculo"></select></div>
-        <div class="f-group"><label>Tipo *</label><select id="dc-tipo"><option>Licenciamento</option><option>IPVA</option><option>Seguro</option><option>ANTT</option><option>Tacógrafo</option><option>CRLV</option></select></div>
-      </div>
-      <div class="form-row">
-        <div class="f-group"><label>Vencimento *</label><input type="date" id="dc-venc"></div>
-        <div class="f-group"><label>Valor (R$)</label><input type="number" id="dc-valor" step="0.01" placeholder="0.00"></div>
-      </div>
-      <div class="form-row single">
-        <div class="f-group"><label>Observações</label><textarea id="dc-obs" placeholder=""></textarea></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modalDoc')">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarDocumento()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button>
-    </div>
+<!-- MODAL OS -->
+<div class="modal-overlay" id="mO">
+  <div class="modal" style="max-width:700px"><div class="modal-header"><span class="modal-title" id="mO-title">Nova Ordem de Serviço</span><button class="modal-close" onclick="closeModal('mO')"><i class="fa-solid fa-x"></i></button></div>
+  <div class="modal-body"><input type="hidden" id="os-id">
+    <div class="form-row"><div class="f-group"><label>Nº OS</label><input type="text" id="os-num" disabled style="opacity:.7;font-family:'IBM Plex Mono',monospace;color:var(--accent)"></div><div class="f-group"><label>Data Abertura *</label><input type="date" id="os-data"></div></div>
+    <div class="form-row"><div class="f-group"><label>Veículo *</label><select id="os-veiculo"></select></div><div class="f-group"><label>Tipo</label><select id="os-tipo"><option>Corretiva</option><option>Preventiva</option><option>Preditiva</option><option>Acidente</option></select></div></div>
+    <div class="form-row"><div class="f-group"><label>Status</label><select id="os-status"><option value="aberta">Aberta</option><option value="em andamento">Em Andamento</option><option value="aguardando peça">Aguardando Peça</option><option value="finalizada">Finalizada</option><option value="cancelada">Cancelada</option></select></div><div class="f-group"><label>Tempo Parado (horas)</label><input type="number" id="os-tempo"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Descrição do Problema</label><textarea id="os-desc"></textarea></div></div>
+    <div class="form-row single"><div class="f-group"><label>Serviços Executados</label><textarea id="os-serv"></textarea></div></div>
+    <div class="form-row single"><div class="f-group"><label>Peças Utilizadas</label><textarea id="os-pecas"></textarea></div></div>
+    <div class="form-row"><div class="f-group"><label>Valor Peças (R$)</label><input type="number" id="os-vp" step="0.01" oninput="calcOS()"></div><div class="f-group"><label>Valor Mão de Obra (R$)</label><input type="number" id="os-vm" step="0.01" oninput="calcOS()"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Valor Total</label><input type="text" id="os-vt" disabled style="color:var(--green);font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:16px"></div></div>
   </div>
+  <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('mO')">Cancelar</button><button class="btn btn-primary" onclick="salvarOS()"><i class="fa-solid fa-floppy-disk"></i> Salvar OS</button></div></div>
 </div>
 
-<!-- ==================== JAVASCRIPT ==================== -->
-<script>
-// ============================================================
-// DATABASE MOCK (substituir por Firebase Firestore em produção)
-// ============================================================
-let DB = {
-  veiculos: [
-    {id:'v1',placa:'ABC-1D23',modelo:'Constellation 17.280',marca:'Volkswagen',ano:2021,kmAtual:185430,combustivel:'Diesel',status:'ativo',obs:''},
-    {id:'v2',placa:'DEF-4E56',modelo:'Actros 2651',marca:'Mercedes-Benz',ano:2020,kmAtual:243100,combustivel:'Diesel',status:'em manutenção',obs:'Motor em revisão geral'},
-    {id:'v3',placa:'GHI-7F89',modelo:'HR 2.5 CD Turbo',marca:'Hyundai',ano:2023,kmAtual:42300,combustivel:'Diesel',status:'ativo',obs:''},
-    {id:'v4',placa:'JKL-0G12',modelo:'Sprinter 415',marca:'Mercedes-Benz',ano:2022,kmAtual:98750,combustivel:'Diesel',status:'ativo',obs:''},
-  ],
-  abastecimentos: [
-    {id:'a1',veiculoId:'v1',posto:'Auto Posto BR 116',litros:380,valorTotal:2280,kmAtual:185430,data:'2024-11-20',obs:'',consumo:8.2},
-    {id:'a2',veiculoId:'v3',posto:'Posto Ipiranga Centro',litros:120,valorTotal:720,kmAtual:42300,data:'2024-11-22',obs:'',consumo:9.1},
-    {id:'a3',veiculoId:'v4',posto:'Shell Marginal',litros:95,valorTotal:570,kmAtual:98750,data:'2024-11-23',obs:'',consumo:10.5},
-    {id:'a4',veiculoId:'v1',posto:'Posto Mogi das Cruzes',litros:400,valorTotal:2400,kmAtual:182000,data:'2024-10-18',obs:'',consumo:7.9},
-    {id:'a5',veiculoId:'v2',posto:'Auto Posto BR 116',litros:350,valorTotal:2100,kmAtual:240000,data:'2024-10-05',obs:'',consumo:8.5},
-  ],
-  manutencoes: [
-    {id:'m1',veiculoId:'v1',tipo:'Troca de Óleo',kmTroca:180000,kmProxima:200000,data:'2024-10-01',obs:''},
-    {id:'m2',veiculoId:'v2',tipo:'Revisão de Freios',kmTroca:240000,kmProxima:270000,data:'2024-10-15',obs:'Pastilhas dianteiras trocadas'},
-    {id:'m3',veiculoId:'v3',tipo:'Troca de Filtro de Ar',kmTroca:40000,kmProxima:60000,data:'2024-11-01',obs:''},
-    {id:'m4',veiculoId:'v4',tipo:'Alinhamento e Balanceamento',kmTroca:95000,kmProxima:115000,data:'2024-11-10',obs:''},
-  ],
-  ordensServico: [
-    {id:'os1',numero:'OS-2024-001',veiculoId:'v2',tipo:'Corretiva',status:'em andamento',dataAbertura:'2024-11-18',descricao:'Vazamento de óleo no motor',servicos:'Substituição de junta do cabeçote',pecas:'Junta cabeçote, parafusos M12',valPecas:1200,valMao:800,valTotal:2000,tempo:72},
-    {id:'os2',numero:'OS-2024-002',veiculoId:'v1',tipo:'Preventiva',status:'finalizada',dataAbertura:'2024-11-10',descricao:'Revisão dos 180.000 km',servicos:'Troca de óleo 15W40, filtro óleo, filtro combustível',pecas:'Óleo 15W40 (20L), filtros',valPecas:420,valMao:300,valTotal:720,tempo:8},
-    {id:'os3',numero:'OS-2024-003',veiculoId:'v4',tipo:'Corretiva',status:'aberta',dataAbertura:'2024-11-24',descricao:'Falha no sistema de ar condicionado',servicos:'',pecas:'',valPecas:0,valMao:0,valTotal:0,tempo:0},
-  ],
-  documentos: [
-    {id:'d1',veiculoId:'v1',tipo:'Licenciamento',vencimento:'2024-12-31',valor:320,obs:''},
-    {id:'d2',veiculoId:'v2',tipo:'IPVA',vencimento:'2025-01-30',valor:4200,obs:'Parcela única'},
-    {id:'d3',veiculoId:'v3',tipo:'Seguro',vencimento:'2024-12-05',valor:1800,obs:'Seguro abrangente - Porto Seguro'},
-    {id:'d4',veiculoId:'v4',tipo:'ANTT',vencimento:'2025-03-15',valor:650,obs:''},
-  ]
-};
+<!-- MODAL DOCUMENTO -->
+<div class="modal-overlay" id="mD">
+  <div class="modal"><div class="modal-header"><span class="modal-title" id="mD-title">Novo Documento</span><button class="modal-close" onclick="closeModal('mD')"><i class="fa-solid fa-x"></i></button></div>
+  <div class="modal-body"><input type="hidden" id="dc-id">
+    <div class="form-row"><div class="f-group"><label>Veículo *</label><select id="dc-veiculo"></select></div><div class="f-group"><label>Tipo *</label><select id="dc-tipo"><option>Licenciamento</option><option>IPVA</option><option>Seguro</option><option>ANTT</option><option>Tacógrafo</option><option>CRLV</option></select></div></div>
+    <div class="form-row"><div class="f-group"><label>Vencimento *</label><input type="date" id="dc-venc"></div><div class="f-group"><label>Valor (R$)</label><input type="number" id="dc-valor" step="0.01"></div></div>
+    <div class="form-row single"><div class="f-group"><label>Observações</label><textarea id="dc-obs"></textarea></div></div>
+  </div>
+  <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('mD')">Cancelar</button><button class="btn btn-primary" onclick="salvarD()"><i class="fa-solid fa-floppy-disk"></i> Salvar</button></div></div>
+</div>
 
-let loggedIn = false;
-let osCounter = 4;
-let relatorioAtivo = '';
-
-// ============================================================
-// AUTH
-// ============================================================
-function doLogin() {
-  const e = document.getElementById('loginEmail').value.trim();
-  const p = document.getElementById('loginPass').value;
-  // Credenciais demo - substituir por Firebase Auth em produção
-  if (e === 'admin@empresa.com' && p === '123456') {
-    loggedIn = true;
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    initApp();
-  } else {
-    document.getElementById('loginError').style.display = 'block';
-    setTimeout(() => document.getElementById('loginError').style.display = 'none', 3000);
-  }
-}
-document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-document.getElementById('loginEmail').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-
-function doLogout() {
-  if (!confirm('Deseja sair do sistema?')) return;
-  loggedIn = false;
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('loginScreen').style.display = 'flex';
-}
-
-// ============================================================
-// NAVIGATION
-// ============================================================
-const pageTitles = {
-  dashboard: 'Dashboard', veiculos: 'Veículos', abastecimentos: 'Abastecimentos',
-  manutencao: 'Manutenção Preventiva', os: 'Ordens de Serviço',
-  documentos: 'Documentos', relatorios: 'Relatórios', configuracoes: 'Configurações'
-};
-
-function showPage(page) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('page-' + page).classList.add('active');
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  const titles = {dashboard:'Dashboard',veiculos:'Veículos',abastecimentos:'Abastecimentos',manutencao:'Preventiva',os:'OS',documentos:'Documentos',relatorios:'Relatórios',configuracoes:'Configurações'};
-  document.querySelectorAll('.nav-item').forEach(n => {
-    if (n.textContent.trim().includes(titles[page])) n.classList.add('active');
-  });
-  document.getElementById('topbarTitle').textContent = pageTitles[page] || page;
-  closeSidebar();
-  window.scrollTo(0, 0);
-  const renders = {dashboard:renderDash,veiculos:renderVeiculos,abastecimentos:renderAbastecimentos,manutencao:renderManutencao,os:renderOS,documentos:renderDocumentos};
-  if (renders[page]) renders[page]();
-}
-
-function toggleSidebar() {
-  document.getElementById('sidebar').classList.toggle('mobile-open');
-  document.getElementById('sidebarOverlay').classList.toggle('open');
-}
-function closeSidebar() {
-  document.getElementById('sidebar').classList.remove('mobile-open');
-  document.getElementById('sidebarOverlay').classList.remove('open');
-}
-
-// ============================================================
-// MODAIS
-// ============================================================
-function openModal(id, reset) {
-  if (reset) resetModal(id);
-  populateVeiculoSelects();
-  document.getElementById(id).classList.add('open');
-}
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-document.querySelectorAll('.modal-overlay').forEach(m => {
-  m.addEventListener('click', function(e) { if (e.target === this) this.classList.remove('open'); });
-});
-
-function resetModal(id) {
-  if (id === 'modalVeiculo') {
-    document.getElementById('v-id').value = '';
-    document.getElementById('modalVeiculoTitle').textContent = 'Novo Veículo';
-    ['v-placa','v-marca','v-modelo','v-ano','v-km','v-obs'].forEach(f => document.getElementById(f).value = '');
-    document.getElementById('v-status').value = 'ativo';
-  }
-  if (id === 'modalAbast') {
-    document.getElementById('ab-id').value = '';
-    document.getElementById('ab-data').value = new Date().toISOString().split('T')[0];
-    ['ab-posto','ab-km','ab-litros','ab-valor','ab-obs','ab-consumo-calc'].forEach(f => document.getElementById(f).value = '');
-  }
-  if (id === 'modalManut') {
-    document.getElementById('mn-id').value = '';
-    document.getElementById('modalManutTitle').textContent = 'Nova Manutenção Preventiva';
-    document.getElementById('mn-data').value = new Date().toISOString().split('T')[0];
-    ['mn-km','mn-km-prox','mn-obs'].forEach(f => document.getElementById(f).value = '');
-  }
-  if (id === 'modalOS') {
-    document.getElementById('os-id').value = '';
-    document.getElementById('modalOSTitle').textContent = 'Nova Ordem de Serviço';
-    document.getElementById('os-num').value = 'OS-' + new Date().getFullYear() + '-00' + (osCounter);
-    document.getElementById('os-data').value = new Date().toISOString().split('T')[0];
-    document.getElementById('os-val-total').value = 'R$ 0,00';
-    ['os-descricao','os-servicos','os-pecas','os-val-pecas','os-val-mao','os-tempo'].forEach(f => document.getElementById(f).value = '');
-    document.getElementById('os-status').value = 'aberta';
-    document.getElementById('os-tipo').value = 'Corretiva';
-  }
-  if (id === 'modalDoc') {
-    document.getElementById('dc-id').value = '';
-    document.getElementById('modalDocTitle').textContent = 'Novo Documento';
-    ['dc-venc','dc-valor','dc-obs'].forEach(f => document.getElementById(f).value = '');
-  }
-}
-
-function populateVeiculoSelects() {
-  const opts = DB.veiculos.map(v => `<option value="${v.id}">${v.placa} — ${v.marca} ${v.modelo}</option>`).join('');
-  ['ab-veiculo','mn-veiculo','os-veiculo','dc-veiculo'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = opts;
-  });
-}
-
-// ============================================================
-// UTILS
-// ============================================================
-function getVeiculo(id) { return DB.veiculos.find(v => v.id === id); }
-function fmtMoney(v) { return 'R$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtDate(s) { if (!s) return '—'; const [y,m,d] = s.split('-'); return `${d}/${m}/${y}`; }
-function uid() { return 'id' + Date.now() + Math.random().toString(36).slice(2, 6); }
-function filterTable(tableId, val) {
-  document.querySelectorAll('#' + tableId + ' tr').forEach(r => {
-    r.style.display = r.textContent.toLowerCase().includes(val.toLowerCase()) ? '' : 'none';
-  });
-}
-function toast(msg, color) {
-  const t = document.createElement('div');
-  t.className = 'notif-toast';
-  t.style.background = color || 'var(--green)';
-  t.innerHTML = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2800);
-}
-
-function statusBadge(s) {
-  const map = {
-    ativo:'badge-green',ativa:'badge-green','em manutenção':'badge-yellow','em andamento':'badge-yellow',
-    'aguardando peça':'badge-purple',inativo:'badge-gray',inativa:'badge-gray',
-    finalizada:'badge-cyan',cancelada:'badge-red',aberta:'badge-blue',
-    vencido:'badge-red','a vencer':'badge-yellow',regular:'badge-green'
-  };
-  return `<span class="badge ${map[s]||'badge-gray'}">${s.charAt(0).toUpperCase()+s.slice(1)}</span>`;
-}
-
-// ============================================================
-// DASHBOARD
-// ============================================================
-let chartGastosInst = null, chartOSInst = null;
-
-function initApp() {
-  const d = new Date();
-  document.getElementById('dashDate').textContent = d.toLocaleDateString('pt-BR', {weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  document.getElementById('anoChart').textContent = d.getFullYear();
-  renderDash();
-}
-
-function renderDash() {
-  document.getElementById('dash-total-v').textContent = DB.veiculos.length;
-  document.getElementById('dash-manut-v').textContent = DB.veiculos.filter(v => v.status === 'em manutenção').length;
-  const mesAtual = new Date().getMonth();
-  const anoAtual = new Date().getFullYear();
-  const gastosAbast = DB.abastecimentos.filter(a => {
-    const d = new Date(a.data); return d.getMonth() === mesAtual && d.getFullYear() === anoAtual;
-  }).reduce((s, a) => s + a.valorTotal, 0);
-  const gastosOS = DB.ordensServico.filter(o => {
-    const d = new Date(o.dataAbertura); return d.getMonth() === mesAtual && d.getFullYear() === anoAtual;
-  }).reduce((s, o) => s + o.valTotal, 0);
-  document.getElementById('dash-gastos-v').textContent = fmtMoney(gastosAbast + gastosOS);
-  const vencidas = DB.manutencoes.filter(m => { const v = getVeiculo(m.veiculoId); return v && v.kmAtual >= m.kmProxima; });
-  document.getElementById('dash-prev-v').textContent = vencidas.length;
-  const hoje = new Date();
-  const docs30 = DB.documentos.filter(d => (new Date(d.vencimento) - hoje) / 864e5 <= 30);
-  document.getElementById('dash-docs-v').textContent = docs30.length;
-  document.getElementById('docBadge').textContent = docs30.length;
-  // OS table
-  const tbody = document.getElementById('dashOsTable');
-  const os = [...DB.ordensServico].reverse().slice(0, 5);
-  tbody.innerHTML = os.map(o => {
-    const v = getVeiculo(o.veiculoId);
-    return `<tr><td class="mono" style="color:var(--accent)">${o.numero}</td><td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td><td>${o.tipo}</td><td>${statusBadge(o.status)}</td><td>${fmtDate(o.dataAbertura)}</td><td class="mono">${fmtMoney(o.valTotal)}</td></tr>`;
-  }).join('');
-  // Gráfico gastos
-  const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const gastosMes = Array(12).fill(0);
-  DB.abastecimentos.forEach(a => { const m = new Date(a.data).getMonth(); gastosMes[m] += a.valorTotal; });
-  DB.ordensServico.forEach(o => { const m = new Date(o.dataAbertura).getMonth(); gastosMes[m] += o.valTotal; });
-  if (chartGastosInst) chartGastosInst.destroy();
-  chartGastosInst = new Chart(document.getElementById('chartGastos'), {
-    type: 'bar',
-    data: { labels: months, datasets: [{ label: 'Gastos (R$)', data: gastosMes, backgroundColor: '#3b82f628', borderColor: '#3b82f6', borderWidth: 2, borderRadius: 4 }] },
-    options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#ffffff08' }, ticks: { color: '#9099b0', font: { size: 11 } } }, y: { grid: { color: '#ffffff08' }, ticks: { color: '#9099b0', font: { size: 11 }, callback: v => 'R$' + Math.round(v / 1000) + 'k' } } } }
-  });
-  // Gráfico OS
-  const statusCounts = { 'aberta': 0, 'em andamento': 0, 'aguardando peça': 0, 'finalizada': 0, 'cancelada': 0 };
-  DB.ordensServico.forEach(o => { statusCounts[o.status] = (statusCounts[o.status] || 0) + 1; });
-  if (chartOSInst) chartOSInst.destroy();
-  chartOSInst = new Chart(document.getElementById('chartOS'), {
-    type: 'doughnut',
-    data: { labels: ['Aberta','Em Andamento','Aguard. Peça','Finalizada','Cancelada'], datasets: [{ data: Object.values(statusCounts), backgroundColor: ['#3b82f635','#f59e0b35','#a855f735','#22c55e35','#ef444435'], borderColor: ['#3b82f6','#f59e0b','#a855f7','#22c55e','#ef4444'], borderWidth: 2 }] },
-    options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#9099b0', font: { size: 11 }, padding: 8 } } } }
-  });
-}
-
-// ============================================================
-// VEÍCULOS
-// ============================================================
-function renderVeiculos() {
-  const tbody = document.getElementById('veiculoTable');
-  document.getElementById('veiculoCount').textContent = `${DB.veiculos.length} veículo(s) cadastrado(s)`;
-  if (!DB.veiculos.length) { tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-car"></i><p>Nenhum veículo cadastrado. Clique em "Novo Veículo" para começar.</p></div></td></tr>`; return; }
-  tbody.innerHTML = DB.veiculos.map(v => `<tr>
-    <td><span class="plate">${v.placa}</span></td>
-    <td>${v.modelo}</td><td>${v.marca}</td><td>${v.ano}</td>
-    <td class="mono">${Number(v.kmAtual).toLocaleString('pt-BR')} km</td>
-    <td>${v.combustivel}</td>
-    <td>${statusBadge(v.status)}</td>
-    <td><div class="flex">
-      <button class="btn btn-ghost btn-sm" onclick="editVeiculo('${v.id}')"><i class="fa-solid fa-pen"></i></button>
-      <button class="btn btn-danger btn-sm" onclick="delVeiculo('${v.id}')"><i class="fa-solid fa-trash"></i></button>
-    </div></td>
-  </tr>`).join('');
-}
-
-function salvarVeiculo() {
-  const id = document.getElementById('v-id').value;
-  const obj = {
-    placa: document.getElementById('v-placa').value.toUpperCase(),
-    modelo: document.getElementById('v-modelo').value,
-    marca: document.getElementById('v-marca').value,
-    ano: +document.getElementById('v-ano').value,
-    kmAtual: +document.getElementById('v-km').value,
-    combustivel: document.getElementById('v-comb').value,
-    status: document.getElementById('v-status').value,
-    obs: document.getElementById('v-obs').value
-  };
-  if (!obj.placa || !obj.marca || !obj.modelo) { toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos obrigatórios!', 'var(--red)'); return; }
-  if (id) { const i = DB.veiculos.findIndex(v => v.id === id); DB.veiculos[i] = {...DB.veiculos[i], ...obj}; toast('<i class="fa-solid fa-check"></i> Veículo atualizado!'); }
-  else { DB.veiculos.push({id: uid(), ...obj}); toast('<i class="fa-solid fa-check"></i> Veículo cadastrado!'); }
-  closeModal('modalVeiculo');
-  renderVeiculos();
-}
-
-function editVeiculo(id) {
-  const v = getVeiculo(id); if (!v) return;
-  document.getElementById('v-id').value = v.id;
-  document.getElementById('v-placa').value = v.placa;
-  document.getElementById('v-marca').value = v.marca;
-  document.getElementById('v-modelo').value = v.modelo;
-  document.getElementById('v-ano').value = v.ano;
-  document.getElementById('v-km').value = v.kmAtual;
-  document.getElementById('v-comb').value = v.combustivel;
-  document.getElementById('v-status').value = v.status;
-  document.getElementById('v-obs').value = v.obs || '';
-  document.getElementById('modalVeiculoTitle').textContent = 'Editar Veículo — ' + v.placa;
-  openModal('modalVeiculo');
-}
-
-function delVeiculo(id) {
-  if (!confirm('Excluir este veículo? Esta ação não pode ser desfeita.')) return;
-  DB.veiculos = DB.veiculos.filter(v => v.id !== id);
-  toast('<i class="fa-solid fa-check"></i> Veículo excluído.', 'var(--text3)');
-  renderVeiculos();
-}
-
-// ============================================================
-// ABASTECIMENTOS
-// ============================================================
-function calcConsumo() {
-  const km = +document.getElementById('ab-km').value;
-  const lit = +document.getElementById('ab-litros').value;
-  const vId = document.getElementById('ab-veiculo').value;
-  const v = getVeiculo(vId);
-  if (v && v.kmAtual && km > v.kmAtual && lit > 0) {
-    const c = ((km - v.kmAtual) / lit).toFixed(2);
-    document.getElementById('ab-consumo-calc').value = c + ' km/L';
-  } else if (km > 0 && lit > 0) {
-    document.getElementById('ab-consumo-calc').value = '— (KM inválido)';
-  }
-}
-
-function renderAbastecimentos() {
-  const tbody = document.getElementById('abastTable');
-  if (!DB.abastecimentos.length) { tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-gas-pump"></i><p>Nenhum abastecimento registrado.</p></div></td></tr>`; return; }
-  const sorted = [...DB.abastecimentos].sort((a, b) => b.data.localeCompare(a.data));
-  tbody.innerHTML = sorted.map(a => {
-    const v = getVeiculo(a.veiculoId);
-    return `<tr>
-      <td>${fmtDate(a.data)}</td>
-      <td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td>
-      <td>${a.posto}</td>
-      <td class="mono">${a.litros} L</td>
-      <td class="mono">${fmtMoney(a.valorTotal)}</td>
-      <td class="mono">${Number(a.kmAtual).toLocaleString('pt-BR')} km</td>
-      <td class="mono" style="color:var(--cyan)">${a.consumo ? a.consumo + ' km/L' : '—'}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="delAbast('${a.id}')"><i class="fa-solid fa-trash"></i></button></td>
-    </tr>`;
-  }).join('');
-  // Stats do mês
-  const mesAtual = new Date().getMonth();
-  const mesDados = DB.abastecimentos.filter(a => new Date(a.data).getMonth() === mesAtual);
-  const totalL = mesDados.reduce((s, a) => s + a.litros, 0);
-  const totalV = mesDados.reduce((s, a) => s + a.valorTotal, 0);
-  const consArr = mesDados.filter(a => a.consumo).map(a => a.consumo);
-  const mediaConsumo = consArr.length ? (consArr.reduce((s, c) => s + c, 0) / consArr.length).toFixed(1) : null;
-  document.getElementById('stat-litros').textContent = totalL.toFixed(0) + ' L';
-  document.getElementById('stat-valor-abast').textContent = fmtMoney(totalV);
-  document.getElementById('stat-consumo').textContent = mediaConsumo ? mediaConsumo + ' km/L' : '— km/L';
-}
-
-function salvarAbastecimento() {
-  const vId = document.getElementById('ab-veiculo').value;
-  const km = +document.getElementById('ab-km').value;
-  const lit = +document.getElementById('ab-litros').value;
-  const v = getVeiculo(vId);
-  let consumo = null;
-  if (v && v.kmAtual && km > v.kmAtual && lit > 0) consumo = +((km - v.kmAtual) / lit).toFixed(2);
-  const obj = {
-    id: uid(), veiculoId: vId,
-    posto: document.getElementById('ab-posto').value || 'Não informado',
-    litros: lit,
-    valorTotal: +document.getElementById('ab-valor').value || 0,
-    kmAtual: km,
-    data: document.getElementById('ab-data').value,
-    obs: document.getElementById('ab-obs').value,
-    consumo
-  };
-  if (!obj.data || !obj.litros) { toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos obrigatórios!', 'var(--red)'); return; }
-  if (v && km > v.kmAtual) v.kmAtual = km;
-  DB.abastecimentos.push(obj);
-  toast('<i class="fa-solid fa-check"></i> Abastecimento registrado!');
-  closeModal('modalAbast');
-  renderAbastecimentos();
-}
-
-function delAbast(id) {
-  if (!confirm('Excluir este registro?')) return;
-  DB.abastecimentos = DB.abastecimentos.filter(a => a.id !== id);
-  renderAbastecimentos();
-}
-
-// ============================================================
-// MANUTENÇÃO
-// ============================================================
-function renderManutencao() {
-  const tbody = document.getElementById('manutTable');
-  const alertsEl = document.getElementById('alertsManut');
-  const alertas = DB.manutencoes.filter(m => { const v = getVeiculo(m.veiculoId); return v && (v.kmAtual >= m.kmProxima || (m.kmProxima - v.kmAtual) <= 500); });
-  document.getElementById('manutBadge').textContent = alertas.length;
-  if (alertas.length) {
-    alertsEl.innerHTML = alertas.map(m => {
-      const v = getVeiculo(m.veiculoId);
-      const vencida = v.kmAtual >= m.kmProxima;
-      const falta = m.kmProxima - v.kmAtual;
-      return `<div class="alert-item ${vencida ? 'danger' : 'warn'}">
-        <div class="alert-icon" style="background:${vencida ? 'var(--red-bg)' : 'var(--yellow-bg)'};color:${vencida ? 'var(--red)' : 'var(--yellow)'}"><i class="fa-solid fa-triangle-exclamation"></i></div>
-        <div class="alert-text"><strong>${v ? v.placa + ' — ' + v.modelo : ''} · ${m.tipo}</strong><span>${vencida ? '⚠️ Manutenção vencida! KM atual: ' + v.kmAtual.toLocaleString('pt-BR') : 'Faltam ' + falta.toLocaleString('pt-BR') + ' km para próxima troca (KM ' + m.kmProxima.toLocaleString('pt-BR') + ')'}</span></div>
-        <span class="badge ${vencida ? 'badge-red' : 'badge-yellow'}">${vencida ? 'VENCIDA' : 'PRÓXIMA'}</span>
-      </div>`;
-    }).join('');
-  } else { alertsEl.innerHTML = ''; }
-  if (!DB.manutencoes.length) { tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-wrench"></i><p>Nenhuma manutenção registrada.</p></div></td></tr>`; return; }
-  tbody.innerHTML = DB.manutencoes.map(m => {
-    const v = getVeiculo(m.veiculoId);
-    const vencida = v && v.kmAtual >= m.kmProxima;
-    const pct = v ? Math.min(100, Math.round((v.kmAtual - m.kmTroca) / (m.kmProxima - m.kmTroca) * 100)) : 0;
-    const cor = vencida ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--green)';
-    return `<tr>
-      <td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td>
-      <td>${m.tipo}</td>
-      <td class="mono">${Number(m.kmTroca).toLocaleString('pt-BR')} km</td>
-      <td class="mono">${Number(m.kmProxima).toLocaleString('pt-BR')} km</td>
-      <td style="min-width:120px"><div style="font-size:11px;color:var(--text3);margin-bottom:4px">${pct}%</div><div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%;background:${cor}"></div></div></td>
-      <td>${fmtDate(m.data)}</td>
-      <td>${statusBadge(vencida ? 'vencido' : 'regular')}</td>
-      <td><div class="flex">
-        <button class="btn btn-ghost btn-sm" onclick="editManut('${m.id}')"><i class="fa-solid fa-pen"></i></button>
-        <button class="btn btn-danger btn-sm" onclick="delManut('${m.id}')"><i class="fa-solid fa-trash"></i></button>
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-function salvarManutencao() {
-  const id = document.getElementById('mn-id').value;
-  const obj = {
-    veiculoId: document.getElementById('mn-veiculo').value,
-    tipo: document.getElementById('mn-tipo').value,
-    kmTroca: +document.getElementById('mn-km').value,
-    kmProxima: +document.getElementById('mn-km-prox').value,
-    data: document.getElementById('mn-data').value,
-    obs: document.getElementById('mn-obs').value
-  };
-  if (!obj.veiculoId || !obj.kmTroca || !obj.kmProxima) { toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos obrigatórios!', 'var(--red)'); return; }
-  if (id) { const i = DB.manutencoes.findIndex(m => m.id === id); DB.manutencoes[i] = {...DB.manutencoes[i], ...obj}; toast('<i class="fa-solid fa-check"></i> Manutenção atualizada!'); }
-  else { DB.manutencoes.push({id: uid(), ...obj}); toast('<i class="fa-solid fa-check"></i> Manutenção registrada!'); }
-  closeModal('modalManut');
-  renderManutencao();
-}
-
-function editManut(id) {
-  const m = DB.manutencoes.find(x => x.id === id); if (!m) return;
-  populateVeiculoSelects();
-  document.getElementById('mn-id').value = m.id;
-  document.getElementById('mn-veiculo').value = m.veiculoId;
-  document.getElementById('mn-tipo').value = m.tipo;
-  document.getElementById('mn-km').value = m.kmTroca;
-  document.getElementById('mn-km-prox').value = m.kmProxima;
-  document.getElementById('mn-data').value = m.data;
-  document.getElementById('mn-obs').value = m.obs || '';
-  document.getElementById('modalManutTitle').textContent = 'Editar Manutenção';
-  openModal('modalManut');
-}
-
-function delManut(id) {
-  if (!confirm('Excluir este registro?')) return;
-  DB.manutencoes = DB.manutencoes.filter(m => m.id !== id);
-  renderManutencao();
-}
-
-// ============================================================
-// OS
-// ============================================================
-function calcOS() {
-  const p = +document.getElementById('os-val-pecas').value || 0;
-  const m = +document.getElementById('os-val-mao').value || 0;
-  document.getElementById('os-val-total').value = fmtMoney(p + m);
-}
-
-function filterOS(status) {
-  document.querySelectorAll('#osTable tr').forEach(r => {
-    r.style.display = !status || r.textContent.toLowerCase().includes(status.toLowerCase()) ? '' : 'none';
-  });
-}
-
-function renderOS() {
-  const tbody = document.getElementById('osTable');
-  const abertas = DB.ordensServico.filter(o => o.status === 'aberta').length;
-  const andamento = DB.ordensServico.filter(o => o.status === 'em andamento').length;
-  const aguardando = DB.ordensServico.filter(o => o.status === 'aguardando peça').length;
-  const fin = DB.ordensServico.filter(o => o.status === 'finalizada').length;
-  const totalVal = DB.ordensServico.reduce((s, o) => s + o.valTotal, 0);
-  document.getElementById('os-abertas').textContent = abertas;
-  document.getElementById('os-andamento').textContent = andamento;
-  document.getElementById('os-aguardando').textContent = aguardando;
-  document.getElementById('os-finalizadas').textContent = fin;
-  document.getElementById('os-valor-total').textContent = fmtMoney(totalVal);
-  document.getElementById('osBadge').textContent = abertas + andamento;
-  const sorted = [...DB.ordensServico].sort((a, b) => b.dataAbertura.localeCompare(a.dataAbertura));
-  tbody.innerHTML = sorted.map(o => {
-    const v = getVeiculo(o.veiculoId);
-    return `<tr>
-      <td class="mono" style="color:var(--accent)">${o.numero}</td>
-      <td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td>
-      <td>${o.tipo}</td>
-      <td>${statusBadge(o.status)}</td>
-      <td>${fmtDate(o.dataAbertura)}</td>
-      <td class="mono">${fmtMoney(o.valTotal)}</td>
-      <td>${o.tempo ? o.tempo + 'h' : '—'}</td>
-      <td><div class="flex">
-        <button class="btn btn-ghost btn-sm" onclick="editOS('${o.id}')"><i class="fa-solid fa-pen"></i></button>
-        <button class="btn btn-danger btn-sm" onclick="delOS('${o.id}')"><i class="fa-solid fa-trash"></i></button>
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-function salvarOS() {
-  const id = document.getElementById('os-id').value;
-  const p = +document.getElementById('os-val-pecas').value || 0;
-  const m = +document.getElementById('os-val-mao').value || 0;
-  const obj = {
-    numero: document.getElementById('os-num').value,
-    veiculoId: document.getElementById('os-veiculo').value,
-    tipo: document.getElementById('os-tipo').value,
-    status: document.getElementById('os-status').value,
-    dataAbertura: document.getElementById('os-data').value,
-    descricao: document.getElementById('os-descricao').value,
-    servicos: document.getElementById('os-servicos').value,
-    pecas: document.getElementById('os-pecas').value,
-    valPecas: p, valMao: m, valTotal: p + m,
-    tempo: +document.getElementById('os-tempo').value || 0
-  };
-  if (!obj.veiculoId || !obj.dataAbertura) { toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos obrigatórios!', 'var(--red)'); return; }
-  if (id) { const i = DB.ordensServico.findIndex(o => o.id === id); DB.ordensServico[i] = {...DB.ordensServico[i], ...obj}; toast('<i class="fa-solid fa-check"></i> OS atualizada!'); }
-  else { DB.ordensServico.push({id: uid(), ...obj}); osCounter++; toast('<i class="fa-solid fa-check"></i> OS criada!'); }
-  closeModal('modalOS');
-  renderOS();
-}
-
-function editOS(id) {
-  const o = DB.ordensServico.find(x => x.id === id); if (!o) return;
-  populateVeiculoSelects();
-  document.getElementById('os-id').value = o.id;
-  document.getElementById('os-num').value = o.numero;
-  document.getElementById('os-veiculo').value = o.veiculoId;
-  document.getElementById('os-tipo').value = o.tipo;
-  document.getElementById('os-status').value = o.status;
-  document.getElementById('os-data').value = o.dataAbertura;
-  document.getElementById('os-descricao').value = o.descricao;
-  document.getElementById('os-servicos').value = o.servicos;
-  document.getElementById('os-pecas').value = o.pecas;
-  document.getElementById('os-val-pecas').value = o.valPecas;
-  document.getElementById('os-val-mao').value = o.valMao;
-  document.getElementById('os-val-total').value = fmtMoney(o.valTotal);
-  document.getElementById('os-tempo').value = o.tempo;
-  document.getElementById('modalOSTitle').textContent = 'Editar OS — ' + o.numero;
-  openModal('modalOS');
-}
-
-function delOS(id) {
-  if (!confirm('Excluir esta OS?')) return;
-  DB.ordensServico = DB.ordensServico.filter(o => o.id !== id);
-  renderOS();
-}
-
-// ============================================================
-// DOCUMENTOS
-// ============================================================
-function renderDocumentos() {
-  const tbody = document.getElementById('docTable');
-  const alertsEl = document.getElementById('alertsDocs');
-  const hoje = new Date();
-  const alertDias = +(document.getElementById('cfg-alerta-dias')?.value || 30);
-  const vencendo = DB.documentos.filter(d => (new Date(d.vencimento) - hoje) / 864e5 <= alertDias);
-  document.getElementById('docBadge').textContent = vencendo.length;
-  if (vencendo.length) {
-    alertsEl.innerHTML = vencendo.map(d => {
-      const v = getVeiculo(d.veiculoId);
-      const diff = Math.round((new Date(d.vencimento) - hoje) / 864e5);
-      const vencido = diff < 0;
-      return `<div class="alert-item ${vencido ? 'danger' : 'warn'}">
-        <div class="alert-icon" style="background:${vencido ? 'var(--red-bg)' : 'var(--yellow-bg)'};color:${vencido ? 'var(--red)' : 'var(--yellow)'}"><i class="fa-solid fa-file-circle-exclamation"></i></div>
-        <div class="alert-text"><strong>${v ? v.placa + ' — ' : ''}${d.tipo}</strong><span>${vencido ? 'Vencido há ' + Math.abs(diff) + ' dia(s)' : 'Vence em ' + diff + ' dia(s) — ' + fmtDate(d.vencimento)}</span></div>
-        <span class="badge ${vencido ? 'badge-red' : 'badge-yellow'}">${vencido ? 'VENCIDO' : 'A VENCER'}</span>
-      </div>`;
-    }).join('');
-  } else { alertsEl.innerHTML = ''; }
-  if (!DB.documentos.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><i class="fa-solid fa-folder-open"></i><p>Nenhum documento cadastrado.</p></div></td></tr>`; return; }
-  tbody.innerHTML = DB.documentos.map(d => {
-    const v = getVeiculo(d.veiculoId);
-    const diff = Math.round((new Date(d.vencimento) - hoje) / 864e5);
-    const st = diff < 0 ? 'vencido' : diff <= 30 ? 'a vencer' : 'regular';
-    return `<tr>
-      <td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td>
-      <td>${d.tipo}</td>
-      <td>${fmtDate(d.vencimento)}</td>
-      <td><span style="color:${diff < 0 ? 'var(--red)' : diff <= 30 ? 'var(--yellow)' : 'var(--green)'}${diff < 0 ? '' : ''}">${diff < 0 ? Math.abs(diff) + ' dias atrás' : diff + ' dias'}</span></td>
-      <td class="mono">${fmtMoney(d.valor)}</td>
-      <td>${statusBadge(st)}</td>
-      <td><div class="flex">
-        <button class="btn btn-ghost btn-sm" onclick="editDoc('${d.id}')"><i class="fa-solid fa-pen"></i></button>
-        <button class="btn btn-danger btn-sm" onclick="delDoc('${d.id}')"><i class="fa-solid fa-trash"></i></button>
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-function salvarDocumento() {
-  const id = document.getElementById('dc-id').value;
-  const obj = {
-    veiculoId: document.getElementById('dc-veiculo').value,
-    tipo: document.getElementById('dc-tipo').value,
-    vencimento: document.getElementById('dc-venc').value,
-    valor: +document.getElementById('dc-valor').value || 0,
-    obs: document.getElementById('dc-obs').value
-  };
-  if (!obj.veiculoId || !obj.vencimento) { toast('<i class="fa-solid fa-exclamation-circle"></i> Preencha os campos obrigatórios!', 'var(--red)'); return; }
-  if (id) { const i = DB.documentos.findIndex(d => d.id === id); DB.documentos[i] = {...DB.documentos[i], ...obj}; toast('<i class="fa-solid fa-check"></i> Documento atualizado!'); }
-  else { DB.documentos.push({id: uid(), ...obj}); toast('<i class="fa-solid fa-check"></i> Documento cadastrado!'); }
-  closeModal('modalDoc');
-  renderDocumentos();
-}
-
-function editDoc(id) {
-  const d = DB.documentos.find(x => x.id === id); if (!d) return;
-  populateVeiculoSelects();
-  document.getElementById('dc-id').value = d.id;
-  document.getElementById('dc-veiculo').value = d.veiculoId;
-  document.getElementById('dc-tipo').value = d.tipo;
-  document.getElementById('dc-venc').value = d.vencimento;
-  document.getElementById('dc-valor').value = d.valor;
-  document.getElementById('dc-obs').value = d.obs || '';
-  document.getElementById('modalDocTitle').textContent = 'Editar Documento';
-  openModal('modalDoc');
-}
-
-function delDoc(id) {
-  if (!confirm('Excluir este documento?')) return;
-  DB.documentos = DB.documentos.filter(d => d.id !== id);
-  renderDocumentos();
-}
-
-// ============================================================
-// RELATÓRIOS
-// ============================================================
-function gerarRelatorio(tipo) {
-  relatorioAtivo = tipo;
-  const el = document.getElementById('relatorioResult');
-  const body = document.getElementById('relatorioBody');
-  const title = document.getElementById('relatorioTitle');
-  el.style.display = 'block';
-  if (tipo === 'custoVeiculo') {
-    title.textContent = 'Custo por Veículo';
-    const rows = DB.veiculos.map(v => {
-      const ab = DB.abastecimentos.filter(a => a.veiculoId === v.id).reduce((s, a) => s + a.valorTotal, 0);
-      const os = DB.ordensServico.filter(o => o.veiculoId === v.id).reduce((s, o) => s + o.valTotal, 0);
-      return {placa: v.placa, modelo: v.marca + ' ' + v.modelo, ab, os, total: ab + os};
-    }).sort((a, b) => b.total - a.total);
-    const totalGeral = rows.reduce((s, r) => s + r.total, 0);
-    body.innerHTML = `<table><thead><tr><th>Placa</th><th>Modelo</th><th>Abastecimentos</th><th>OS / Manutenção</th><th>Total</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td><span class="plate">${r.placa}</span></td><td>${r.modelo}</td><td class="mono">${fmtMoney(r.ab)}</td><td class="mono">${fmtMoney(r.os)}</td><td class="mono" style="font-weight:600;color:var(--text)">${fmtMoney(r.total)}</td></tr>`).join('')}
-      <tr style="border-top:2px solid var(--border3)"><td colspan="4" style="font-weight:600;color:var(--text2)">Total Geral</td><td class="mono" style="font-weight:700;color:var(--accent)">${fmtMoney(totalGeral)}</td></tr>
-    </tbody></table>`;
-  }
-  if (tipo === 'combustivel') {
-    title.textContent = 'Relatório de Combustível';
-    const sorted = [...DB.abastecimentos].sort((a, b) => b.data.localeCompare(a.data));
-    const totalL = sorted.reduce((s, a) => s + a.litros, 0);
-    const totalV = sorted.reduce((s, a) => s + a.valorTotal, 0);
-    body.innerHTML = `<table><thead><tr><th>Data</th><th>Veículo</th><th>Posto</th><th>Litros</th><th>Valor</th><th>Consumo</th></tr></thead><tbody>
-      ${sorted.map(a => { const v = getVeiculo(a.veiculoId); return `<tr><td>${fmtDate(a.data)}</td><td>${v ? `<span class="plate">${v.placa}</span>` : '—'}</td><td>${a.posto}</td><td class="mono">${a.litros} L</td><td class="mono">${fmtMoney(a.valorTotal)}</td><td class="mono" style="color:var(--cyan)">${a.consumo ? a.consumo + ' km/L' : '—'}</td></tr>`; }).join('')}
-      <tr style="border-top:2px solid var(--border3)"><td colspan="3" style="font-weight:600;color:var(--text2)">Totais</td><td class="mono" style="font-weight:600">${totalL.toFixed(0)} L</td><td class="mono" style="font-weight:600">${fmtMoney(totalV)}</td><td>—</td></tr>
-    </tbody></table>`;
-  }
-  if (tipo === 'os') {
-    title.textContent = 'Histórico de Ordens de Serviço';
-    const sorted = [...DB.ordensServico].sort((a, b) => b.dataAbertura.localeCompare(a.dataAbertura));
-    const totalV = sorted.reduce((s, o) => s + o.valTotal, 0);
-    body.innerHTML = `<table><thead><tr><th>Nº OS</th><th>Veículo</th><th>Tipo</th><th>Status</th><th>Abertura</th><th>Tempo</th><th>Valor</th></tr></thead><tbody>
-      ${sorted.map(o => { const v = getVeiculo(o.veiculoId); return `<tr><td class="mono" style="color:var(--accent)">${o.numero}</td><td>${v ? `<span class="plate">${v.placa}</span>` : '—'}</td><td>${o.tipo}</td><td>${statusBadge(o.status)}</td><td>${fmtDate(o.dataAbertura)}</td><td>${o.tempo ? o.tempo + 'h' : '—'}</td><td class="mono">${fmtMoney(o.valTotal)}</td></tr>`; }).join('')}
-      <tr style="border-top:2px solid var(--border3)"><td colspan="6" style="font-weight:600;color:var(--text2)">Total</td><td class="mono" style="font-weight:600;color:var(--accent)">${fmtMoney(totalV)}</td></tr>
-    </tbody></table>`;
-  }
-  if (tipo === 'docs') {
-    title.textContent = 'Documentos Vencidos / A Vencer';
-    const hoje = new Date();
-    const docs = DB.documentos.filter(d => (new Date(d.vencimento) - hoje) / 864e5 <= 30).sort((a, b) => a.vencimento.localeCompare(b.vencimento));
-    body.innerHTML = docs.length ? `<table><thead><tr><th>Veículo</th><th>Tipo</th><th>Vencimento</th><th>Dias</th><th>Valor</th><th>Status</th></tr></thead><tbody>
-      ${docs.map(d => { const v = getVeiculo(d.veiculoId); const diff = Math.round((new Date(d.vencimento) - hoje) / 864e5); return `<tr><td>${v ? `<span class="plate">${v.placa}</span> ${v.modelo}` : '—'}</td><td>${d.tipo}</td><td>${fmtDate(d.vencimento)}</td><td style="color:${diff < 0 ? 'var(--red)' : 'var(--yellow)'}">${diff < 0 ? Math.abs(diff) + ' dias atrás' : diff + ' dias'}</td><td class="mono">${fmtMoney(d.valor)}</td><td>${statusBadge(diff < 0 ? 'vencido' : 'a vencer')}</td></tr>`; }).join('')}
-    </tbody></table>` : '<div class="empty-state"><i class="fa-solid fa-circle-check" style="color:var(--green)"></i><p>Nenhum documento vencido ou a vencer nos próximos 30 dias.</p></div>';
-  }
-  el.scrollIntoView({behavior: 'smooth'});
-}
-
-function imprimirRelatorio() {
-  window.print();
-}
-
-function exportarCSV(tipo) {
-  let csv = '';
-  if (tipo === 'custoVeiculo') {
-    csv = 'Placa,Modelo,Abastecimentos,OS/Manutenção,Total\n';
-    DB.veiculos.forEach(v => {
-      const ab = DB.abastecimentos.filter(a => a.veiculoId === v.id).reduce((s, a) => s + a.valorTotal, 0);
-      const os = DB.ordensServico.filter(o => o.veiculoId === v.id).reduce((s, o) => s + o.valTotal, 0);
-      csv += `${v.placa},${v.marca} ${v.modelo},${ab.toFixed(2)},${os.toFixed(2)},${(ab+os).toFixed(2)}\n`;
-    });
-  }
-  if (tipo === 'combustivel') {
-    csv = 'Data,Veículo,Posto,Litros,Valor,Consumo\n';
-    DB.abastecimentos.forEach(a => { const v = getVeiculo(a.veiculoId); csv += `${fmtDate(a.data)},${v?v.placa:''},${a.posto},${a.litros},${a.valorTotal},${a.consumo||''}\n`; });
-  }
-  if (tipo === 'os') {
-    csv = 'Nº OS,Veículo,Tipo,Status,Data,Valor\n';
-    DB.ordensServico.forEach(o => { const v = getVeiculo(o.veiculoId); csv += `${o.numero},${v?v.placa:''},${o.tipo},${o.status},${fmtDate(o.dataAbertura)},${o.valTotal}\n`; });
-  }
-  if (tipo === 'docs') {
-    csv = 'Veículo,Tipo,Vencimento,Valor,Status\n';
-    const hoje = new Date();
-    DB.documentos.forEach(d => { const v = getVeiculo(d.veiculoId); const diff = Math.round((new Date(d.vencimento)-hoje)/864e5); csv += `${v?v.placa:''},${d.tipo},${fmtDate(d.vencimento)},${d.valor},${diff<0?'vencido':'a vencer'}\n`; });
-  }
-  const blob = new Blob(['\uFEFF' + csv], {type: 'text/csv;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'fleetos_' + tipo + '_' + new Date().toISOString().split('T')[0] + '.csv';
-  a.click(); URL.revokeObjectURL(url);
-  toast('<i class="fa-solid fa-download"></i> CSV exportado!');
-}
-
-// ============================================================
-// CONFIGURAÇÕES
-// ============================================================
-function saveConfig() {
-  toast('<i class="fa-solid fa-check"></i> Configurações salvas com sucesso!');
-}
-</script>
 </body>
 </html>
